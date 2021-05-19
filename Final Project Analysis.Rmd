@@ -1,0 +1,2694 @@
+---
+title: "Characterisation of the Microbiota Composition of STGG Storage Media"
+author: "Matthew Hoyle"
+date: "08/03/2021"
+output:
+  html_document: 
+    toc: true
+    toc_float:
+        collapsed: true
+        smooth_scroll: true
+    number_sections: true
+    theme: yeti
+    highlight: pygments
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, error=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+```
+This markdown file contains the script and figures used in the statistical analysis for my Infectious Diseases honours research project at the University of Edinburgh. 
+
+# Load packages and import data
+```{r, warning=FALSE}
+rm(list = ls())
+# Load Packages
+
+library(vegan)
+library(phyloseq)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(tibble)
+library(fpc)
+library(tidyr)
+library(gridExtra)
+library(Hmisc)
+library(grid)
+library(metagenomeSeq)
+library(ggpubr)
+library(decontam)
+library(wesanderson)
+library(pairwiseAdonis)
+library(EnhancedVolcano)
+library(FSA)
+library(xtable)
+library(forcats)
+
+italic <- function(x){
+  paste("\textit{",
+        x,
+        "}")
+}
+```
+
+# Data Preparation
+```{r}
+
+# Read in Data
+ps <- readRDS("phyloseq_object.rds")
+ps_filtered_old <- readRDS("ps_filtered.rds")
+ps_filtered <- readRDS("ps_filtered_march.rds")
+
+ps
+ps_filtered
+
+# remove old ASV column from updated ps, try to reassign new taxonomy table with only new ASV
+tax_species <- data.frame(tax_table(ps_filtered)) %>%
+  select(-c(7)) %>%
+  rename(ASV=ASV.1)
+  
+tax_table(ps_filtered) <- as.matrix(tax_species)
+head(tax_table(ps_filtered))
+
+# visualise data
+sample_names(ps)
+rank_names(ps)
+sample_variables(ps)
+
+# visualise data
+sample_names(ps_filtered)
+rank_names(ps_filtered)
+sample_variables(ps_filtered)
+
+#Remove PCR_blanks from PS
+ps <- subset_samples(ps, !(Sample_type %in% "pcr_blank"))
+
+#Extract meta, taxa and OTU data for Future statistical analysis
+metadata <- data.frame(sample_data(ps))
+metadata_filtered <- data.frame(sample_data(ps_filtered))
+otu_filtered <- data.frame(otu_table(ps_filtered))
+tax_filtered <- data.frame(tax_table(ps_filtered))
+
+# Number of samples in each sample type
+plyr::count(metadata_filtered, "Sample_type")
+```
+
+# Alpha Diversity
+## Visualise a range of alpha diversity measures and choose appropriate measure
+```{r}
+
+# Visualise Alpha-diversity
+plot_richness(ps, x="Sample_type") +
+  geom_boxplot()
+plot_richness(ps, measures = c("Observed", "Shannon"), x="Sample_type")+
+  geom_boxplot()
+
+```
+
+## Create matrix of alpha diversity measures
+```{r}
+# data frame containing a number of alpha diversity estimates using "estimate_richness()"
+rich = estimate_richness(ps)
+
+```
+## Plot Observed Alpha Diversity
+```{r}
+#Assign Observed index to Sample data column
+ps@sam_data$observed_index <- rich$Observed
+
+#Plot Observed Index
+ggplot(ps@sam_data, aes(x=Sample_type, y=observed_index, fill=Sample_type))+
+  stat_boxplot(geom = "errorbar", width = 0.25)+
+  geom_boxplot()+
+  scale_fill_manual(name = "Sample Type", labels = c("Blank", "RNA protect", "STGG"), values = wes_palette(n=3, name = "FantasticFox1"))+
+  scale_x_discrete(label=c("Blank", "RNA protect", "STGG"))+
+  #geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 1)+
+  geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("Sample Type")+
+  ylab("Alpha Diversity (Observed)")+
+  #ggtitle("Alpha Diversity (Observed) of STGG, RNA Protect and Environmental Blank Samples") +
+  theme_bw()+
+  ggsave("Alpha_Diversity_Observed_BP.pdf", units="in", width=8, height=5, dpi=300)
+```
+Alpha diversity, as measured by the number of species observed in each sample, appears relatively similar between samples from RNA Protect storage media and environmental controls, but elevated in STGG samples. 
+
+## Determine statistical significance of these differences
+```{r}
+#Assess distribution of Observed index values
+hist(rich$Observed)
+
+#Data is normally distributed so one-way ANOVA can be used (extracted df required)
+alpha_df <- data.frame(sample_data(ps))
+m1 <- aov(observed_index~Sample_type, alpha_df)
+plot(m1)
+summary(m1)
+
+#Perform tukey HSD post Hoc test to identify difference between groups
+m1.tukey <- TukeyHSD(m1, conf.level = 0.95)
+m1.tukey
+```
+Further analysis was preformed to determine whether the differences indicated by the boxplot were statistically significant. Observed alpha diversity data was normally distributed so one-way ANOVA was used. Results showed a significant difference in alpha diversity between sample types (p-value <0.05) and so the null hypothesis that observed alpha diversity dose not differ significantly between samples was rejected. Post-hoc analysis using a Tukey's honestly significant difference (HSD) test supported a significant difference between STGG samples and environmental controls, whilst also indicating a small, statistically insignificant, difference between STGG and RNa Protect sample (p-value=0.06).
+
+## Plot Shannon Index
+```{r}
+#Assign Shannon index to sample data column
+ps@sam_data$shannon_index <- rich$Shannon
+
+#Plot Shannon Index
+ggplot(ps@sam_data, aes(Sample_type, shannon_index, fill=Sample_type))+
+  stat_boxplot(geom = "errorbar", width = 0.25)+
+  geom_boxplot()+
+  scale_fill_manual(name = "Sample Type", labels = c("Blank", "RNA protect", "STGG"), values = wes_palette(n=3, name = "FantasticFox1"))+
+  scale_x_discrete(label=c("Blank", "RNA protect", "STGG"))+
+  #geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 1)+
+  geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("Sample Type")+
+  ylab("Alpha Diversity (Shannon Index)")+
+  ggtitle("Alpha Diversity (Shannon) of STGG, RNA Protect and Environmental Controls")+
+  ggsave("Alpha_Diversity_Shannon_BP.pdf", units="in", width=8, height=5, dpi=300)
+```
+Alpha diversity was also assessed using the Shannon-Weiner diversity index. A boxplot indicated that shannon index was similar in all sample types. 
+```{r}
+#Assess distribution of data
+hist(rich$Shannon)
+
+ggdensity(rich$Shannon,
+          main = "Density of Shannon Index",
+          xlab = "Shannon Index")
+
+ggqqplot(rich$Shannon)
+
+shapiro.test(rich$Shannon)
+
+#Log Transform data to normal distribution
+ps@sam_data$logShannon <- log10(max(rich$Shannon+1) - rich$Shannon)
+hist(ps@sam_data$logShannon)
+
+#Plot Shannon Index
+ggplot(ps@sam_data, aes(x=Sample_type, y=logShannon, fill=Sample_type))+
+  stat_boxplot(geom = "errorbar", width = 0.25)+
+  geom_boxplot()+
+  scale_fill_manual(name = "Sample Type", labels = c("Blank", "RNA protect", "STGG"), values = wes_palette(n=3, name = "FantasticFox1"))+
+  scale_x_discrete(label=c("Blank", "RNA protect", "STGG"))+
+  #geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 1)+
+  geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("Sample Type")+
+  ylab("log10(Shannon Index)")+
+  #ggtitle("Alpha Diversity (Shannon) of STGG, RNA Protect and Environmental Controls")+
+  theme_bw()+
+  ggsave("Alpha_Diversity_Shannon_BP.pdf", units="in", width=8, height=5, dpi=300)
+```
+```{r}
+#Data appears normally distributed, so one-way ANOVA can be used (extract df)
+alpha_df <- data.frame(sample_data(ps))
+m2 <- aov(logShannon ~ Sample_type, alpha_df)
+plot(m2)
+summary(m2)
+```
+Visualization of the Shannon index data showed that a log transformation was required to achieve normal distribution. One-way ANOVA was then performed using the transformed data. Results confirmed that Shannon diversity did not differ significantly between sample types (p-value = 0.99). 
+
+
+# Beta Diversity
+## Calulate Bray-curtis dissimilarity measure to compare between sample diversity
+```{r}
+
+#Calculate Bray-curtis dissimilarity matrix to determine between sample diversity
+BrayDist <- distance(ps_filtered, method = "bray")
+
+```
+
+## Ordination Plot with Elipses
+```{r}
+#set seed
+set.seed(10)
+
+#run ordination
+ordBC=metaMDS(t(otu_filtered), "bray", trymax=10, k=2, trace = TRUE)
+
+#plot samples as points in a 2D space and draw elypses around each group according to "group"
+nMDS <- data.frame(NMDS1=ordBC$points[,1], NMDS2=ordBC$points[,2], group= as.factor(metadata_filtered$Sample_type), MiSeq_Run= as.factor(metadata_filtered$Run_No))
+
+df_ellipse <- data.frame()
+veganCovEllipse<-function (cov, center = c(0, 0), scale = 1, npoints = 100) 
+{
+  theta <- (0:npoints) * 2 * pi/npoints
+  Circle <- cbind(cos(theta), sin(theta))
+  t(center + scale * t(Circle %*% chol(cov)))
+}
+
+for(i in 1:length(levels(nMDS$group))) {
+  df_ellipse <- rbind(df_ellipse, cbind(as.data.frame(with(nMDS[nMDS$group==levels(nMDS$group)[i],],
+                                                           veganCovEllipse(cov.wt(cbind(NMDS1,NMDS2),wt=rep(1/length(NMDS1),length(NMDS1)))$cov, center=c(mean(NMDS1),mean(NMDS2))))),group=levels(nMDS$group)[i]))
+}
+
+ggplot(data=nMDS, aes(NMDS1, NMDS2)) +
+         geom_polygon(data=df_ellipse, aes(x=NMDS1, y=NMDS2, fill=group), alpha=.5,show.legend = F) +
+         geom_point(aes(colour = group, shape= MiSeq_Run), size=2) +
+         scale_color_discrete(name="Sample Type", labels=c("Blank", "RNA Protect", "STGG"))+
+  scale_shape_discrete(name = "Sequencing Run")
+  theme_bw()
+  #ggsave("Ordination_Plot_with_Elypses.pdf", units="in", width=8, height=5, dpi=300)
+  
+```
+To investigate whether the diversity between samples varied with sample type, beta diversity was calculated using the Bray-Curtis dissimilarity measure. To visualise this highly dimensional data, non-metric multidimensional scaling (nMDS) was used to plot the samples in a two dimensional space with elypses around each sample type. Data points were also coloured according to Sample Type and assigned a shape in relation to the MiSeq run as shown in the legend. Ordination showed a dissimilarity in beta diversity between STGG and control samples. RNA Samples also appeared to differ with STGG samples, however appeared similar to control samples.
+
+A strong distinction between samples from each MiSeq run was also observed, with samples from the same run appearing similar, whilst samples from different runs showing a strong dissimilarity. 
+
+## Determine Statistical Significance using PERMANOVA
+```{r}
+#Use Permanova to determine any statistical differences in beta diversity between sample_types
+perm1 <- adonis(BrayDist ~ Sample_type + Run_No, data = metadata_filtered)
+perm1
+
+print(xtable(perm1$aov.tab, type = "latex", digits = 3), file = "Beta_PERMANOVA1.tex")
+
+perm2 <- adonis(BrayDist ~ Run_No, data = metadata_filtered, )
+perm2
+
+#Perform post-hoc analysis to determine between which groups is this difference is occurring
+library(devtools)
+#install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+
+perm1.2 <- pairwise.adonis(BrayDist, factors = metadata_filtered$Sample_type, p.adjust.m = 'holm')
+perm1.2
+print(xtable(perm1.2, type = "latex", digits = 3), file = "Beta_PERMANOVA1.2.tex")
+
+```
+These observations were supported by results from permutational multivariate analysis of variance (PERMANOVA). The dissimilarity between groups was shown to be statistically significant (p-value<0.05), and post-hoc analysis with `pairwiseAdonis` showed this dissimilarity between Blank and STGG samples (adjusted p-value<0.05) but not between Blank and RNA Protect samples (adjusted p-value<0.05). Results also showed a significant dissimilarity between STGG and RNA Protect Samples (adjusted p-value<0.05).
+
+A significant difference between samples from MiSeq run 514 and 523 was also observed (p-value<0.05). 
+
+## Beta Diversity of each sample type in Run_No 523
+As the NMDS plot had shown a significant difference in beta diversity between MiSeq runs, further analysis was conducted to investigate how beta diversity compared between sample types in each run.
+```{r}
+ps_filtered523 <- subset_samples(ps_filtered, !(Run_No %in% "514"))
+ps_filtered523 <- prune_taxa(taxa_sums(ps_filtered523) > 0, ps_filtered523)
+
+
+#Calculate Bray-curtis dissimilarity matrix to determine between sample diversity
+BrayDist523 <- distance(ps_filtered523, method = "bray")
+
+#Extract Meta data and OTU
+metadata523 <- data.frame(sample_data(ps_filtered523))
+otu_523 <- data.frame(otu_table(ps_filtered523))
+
+#set seed
+set.seed(10)
+
+#run ordination
+ordBC523=metaMDS(t(otu_523), "bray", trymax=10, k=2, trace = TRUE)
+
+#plot samples as points in a 2D space and draw elypses around each group according to "group"
+nMDS523 <- data.frame(NMDS1=ordBC523$points[,1], NMDS2=ordBC523$points[,2], group= as.factor(metadata523$Sample_type))
+
+df_ellipse <- data.frame()
+veganCovEllipse<-function (cov, center = c(0, 0), scale = 1, npoints = 100) 
+{
+  theta <- (0:npoints) * 2 * pi/npoints
+  Circle <- cbind(cos(theta), sin(theta))
+  t(center + scale * t(Circle %*% chol(cov)))
+}
+
+for(i in 1:length(levels(nMDS523$group))) {
+  df_ellipse <- rbind(df_ellipse, cbind(as.data.frame(with(nMDS523[nMDS523$group==levels(nMDS523$group)[i],],
+                                                           veganCovEllipse(cov.wt(cbind(NMDS1,NMDS2),wt=rep(1/length(NMDS1),length(NMDS1)))$cov, center=c(mean(NMDS1),mean(NMDS2))))),group=levels(nMDS$group)[i]))
+}
+
+ggplot(data=nMDS523, aes(NMDS1, NMDS2)) +
+         geom_polygon(data=df_ellipse, aes(x=NMDS1, y=NMDS2, fill=group), alpha=.5,show.legend = F) +
+         geom_point(aes(colour = group), size=2) +
+         scale_color_discrete(name="Sample Type", labels=c("Blank", "RNA Protect", "STGG"))+
+  theme_bw()+
+  ggsave("Ordination_Plot_with_Elypses_Run523.pdf", units="in", width=5, height=3, dpi=300)
+
+#PERMANOVA to check statistical significance
+perm523 <- adonis(BrayDist523 ~ Sample_type, data = metadata523)
+perm523
+print(xtable(perm523$aov.tab, type = "latex", digits = 3), file = "Beta_PERMANOVA523.tex")
+
+```
+The Bray-Curtis dissimilarity measure of RNA protect and control samples from MiSeq run no. 523 was calculated and visualised using an NMDS plot. Results showed no dissimilary between RNA protect samples and environmental control blanks, which was supported by PERMANOVA results (p-value<0.05). 
+
+## Beta Diversity of each sample type in Run_No 514
+```{r}
+ps_filtered514 <- subset_samples(ps_filtered, !(Run_No %in% "523"))
+ps_filtered514 <- prune_taxa(taxa_sums(ps_filtered514) > 0, ps_filtered514)
+
+#Calculate Bray-curtis dissimilarity matrix to determine between sample diversity
+BrayDist514 <- distance(ps_filtered514, method = "bray")
+
+#Extract Meta data and OTU
+metadata514 <- data.frame(sample_data(ps_filtered514))
+otu_514 <- data.frame(otu_table(ps_filtered514))
+
+#set seed
+set.seed(10)
+
+#run ordination
+ordBC514=metaMDS(t(otu_514), "bray", trymax=10, k=2, trace = TRUE)
+
+#plot samples as points in a 2D space and draw elypses around each group according to "group"
+nMDS514 <- data.frame(NMDS1=ordBC514$points[,1], NMDS2=ordBC514$points[,2], group= as.factor(metadata514$Sample_type))
+
+df_ellipse <- data.frame()
+veganCovEllipse<-function (cov, center = c(0, 0), scale = 1, npoints = 100) 
+{
+  theta <- (0:npoints) * 2 * pi/npoints
+  Circle <- cbind(cos(theta), sin(theta))
+  t(center + scale * t(Circle %*% chol(cov)))
+}
+
+for(i in 1:length(levels(nMDS514$group))) {
+  df_ellipse <- rbind(df_ellipse, cbind(as.data.frame(with(nMDS514[nMDS514$group==levels(nMDS514$group)[i],],
+                                                           veganCovEllipse(cov.wt(cbind(NMDS1,NMDS2),wt=rep(1/length(NMDS1),length(NMDS1)))$cov, center=c(mean(NMDS1),mean(NMDS2))))),group=levels(nMDS$group)[i]))
+}
+
+ggplot(data=nMDS514, aes(NMDS1, NMDS2)) +
+         geom_polygon(data=df_ellipse, aes(x=NMDS1, y=NMDS2, fill=group), alpha=.5,show.legend = F) +
+         geom_point(aes(colour = group), size=2) +
+         scale_color_discrete(name="Sample Type", labels=c("Blank", "STGG"))+
+  theme_bw()+
+  ggsave("Ordination_Plot_with_Elypses_Run514.pdf", units="in", width=5, height=3, dpi=300)
+
+#PERMANOVA to check statistical significance
+perm514 <- adonis(BrayDist514 ~ Sample_type, data = metadata514)
+perm514
+print(xtable(perm514$aov.tab, type = "latex", digits = 3), file = "Beta_PERMANOVA514.tex")
+
+```
+The Bray-Curtis dissimilarity measure of STGG and control samples from MiSeq run no. 514 was calculated and visualised using an NMDS plot. Results showed dissimilarity between RNA protect samples and environmental control blanks. PERMANOVA found this dissimilarity to be statistically significant (p-value<0.05).
+
+## Beta Diversity of Enivronmental Blanks
+```{r}
+ps_filtered_blanks <- ps_filtered %>%
+  subset_samples(!(Sample_type %in% "stgg")) %>%
+  subset_samples(!(Sample_type %in% "rna_protect"))
+
+#Calculate Bray-curtis dissimilarity matrix to determine between sample diversity
+BrayDist_blanks <- distance(ps_filtered_blanks, method = "bray")
+
+#Extract Meta data and OTU
+metadata_blanks <- data.frame(sample_data(ps_filtered_blanks))
+otu_blanks <- data.frame(otu_table(ps_filtered_blanks))
+
+#set seed
+set.seed(10)
+
+#run ordination
+ordBC_blanks=metaMDS(t(otu_blanks), "bray", trymax=10, k=2, trace = TRUE)
+
+#plot samples as points in a 2D space and draw elypses around each group according to "group"
+nMDS_blanks <- data.frame(NMDS1=ordBC_blanks$points[,1], NMDS2=ordBC_blanks$points[,2], group= as.factor(metadata_blanks$Run_No))
+
+df_ellipse <- data.frame()
+veganCovEllipse<-function (cov, center = c(0, 0), scale = 1, npoints = 100) 
+{
+  theta <- (0:npoints) * 2 * pi/npoints
+  Circle <- cbind(cos(theta), sin(theta))
+  t(center + scale * t(Circle %*% chol(cov)))
+}
+
+for(i in 1:length(levels(nMDS_blanks$group))) {
+  df_ellipse <- rbind(df_ellipse, cbind(as.data.frame(with(nMDS_blanks[nMDS_blanks$group==levels(nMDS_blanks$group)[i],],
+                                                           veganCovEllipse(cov.wt(cbind(NMDS1,NMDS2),wt=rep(1/length(NMDS1),length(NMDS1)))$cov, center=c(mean(NMDS1),mean(NMDS2))))),group=levels(nMDS$group)[i]))
+}
+
+ggplot(data=nMDS_blanks, aes(NMDS1, NMDS2)) +
+         geom_polygon(data=df_ellipse, aes(x=NMDS1, y=NMDS2, fill=group), alpha=.5,show.legend = F) +
+         geom_point(aes(colour = group), size=2) +
+         scale_color_discrete(name="MiSeq Run No.", labels=c("514", "523"))+
+  ggsave("Ordination_Plot_with_Elypses_Blanks.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+#PERMANOVA to check statistical significance
+perm_blanks <- adonis(BrayDist_blanks ~ Run_No, data = metadata_blanks)
+perm_blanks
+```
+# Stacked Bar Chart
+## First plot relative abundances at Phylum level
+```{r}
+###phylum level relative abundances
+
+phy_phylum<-tax_glom(ps_filtered, "Phylum") ##10
+
+#Extract OTUs at phylumlevel
+otu_phy<-phy_phylum%>%
+  otu_table%>%
+  as("matrix")%>%
+  magrittr::set_rownames(paste(tax_table(phy_phylum)[,"Phylum"], seq(1:length(tax_table(phy_phylum)[,"Phylum"])), sep = "_"))%>%
+  data.frame(.)
+
+##Convert into RA
+otu_phy_RA <- t(t(otu_phy)/colSums(otu_phy))
+
+phy_table_ord <- otu_phy_RA[order(rowSums(otu_phy),decreasing=T),]
+n = 10
+stack.dfT_phy <- cbind(data.frame(Sample.ID=rownames(metadata_filtered)), t(phy_table_ord))%>% 
+  data.frame(check.names = F)%>%
+  gather(key=Phylum, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(Phylum, levels = rev(unique(Phylum))))
+
+metadata_filtered$Sample <-rownames(metadata_filtered)
+
+#Add Sample_type as a variable of interest
+Sample_group<-metadata_filtered%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_phy$Sample_group <- Sample_group[match(stack.dfT_phy$Sample.ID, names(Sample_group))]
+##overall mean abundances ,
+mean_ab_groups_phy <- stack.dfT_phy%>%
+  group_by(Phylum)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)%>%
+  arrange(desc(mean_percentage))
+
+write.table(mean_ab_groups_phy, file="mean_abundances_phylum_level_all.txt")
+print(xtable(mean_ab_groups_phy, digits = 4, type = "latex"), file = "mean_abundances_phylum_level.tex")
+
+##RA stratified by Group 
+mean_ab_groups_phy_str<-stack.dfT_phy%>%
+  group_by(ASV,Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100,Group=ifelse(Sample_group=="blank","STGG","rna_protect"))
+
+#color vector
+col <-c("#0095e9", "#ffd500","#b452f6","#83cf00",
+        "#d84e9a",
+        "#01c343",
+        "#ffacfe",
+        "#01ad6b",
+        "#ffb539",
+        "#cedeff",
+        "#a98c00",
+        "#688794",
+        "#fffe90",
+        "#b66e72",
+        "#b7ffe2",
+        "#5e8f47",
+        "#ffeeb4")
+#Create facet labels 
+facet_labels <- c("Blank", "RNA Protect", "STGG")
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_phy_str, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative Abundance (%)")+
+  xlab("Sample Type")+
+  scale_fill_manual(values = col)+
+  #facet_grid(.~Sample_group, scales = "free", labeller = labeller("Blank", "RNA Protect", "STGG"))+
+  scale_x_discrete(label=c("Blank", "RNA protect", "STGG"))+
+  theme_bw() +
+  #theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +
+ggsave("Relative_abundances_phylum_sample_type.pdf", units="in", width=8, height=5, dpi=300)
+
+##RA stratified by Group 
+mean_ab_groups_phy_sample<-stack.dfT_phy%>%
+  group_by(ASV,Sample_group, Sample.ID)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100,Group=ifelse(Sample_group=="blank","STGG","rna_protect"))
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_phy_sample, aes(x = Sample.ID, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative Abundance (%)")+
+  xlab("Sample Type")+
+  scale_fill_manual(values = col)+
+  #facet_grid(.~Sample_group, scales = "free", labeller = labeller("Blank", "RNA Protect", "STGG"))+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +
+ggsave("Relative_abundances_phylum_sample.pdf", units="in", width=8, height=5, dpi=300)
+```
+A stacked bar chart was created to visualise the microbial composition of each sample type at the phylum level. Phyla are shown in relative abundance, as a percentage of the mean total counts in each sample type. At phylum level the microbial composition of each sample type appears relatively similar. Proteobacteria are the most abundant phyla in all sample types accounting for around 75% (73.96%) of microbial sequences detected in each sample. Deinococotta was the second most abundant present with an average relative abundance of around 15% (16.3%) in all sample types. Actinobateriota and Firmicutes accounted for the majority of the remaining taxa in all sample types, with average relative abundances of approximately 5% (4.64%) and 4% (4.22%). 
+
+### Relative Abundance 
+```{r}
+
+RA.df_phy <- stack.dfT_phy%>%
+  mutate(log10_RA=log10(RA+1))%>%
+  mutate(sqrt_RA=sqrt(RA))
+
+MiSeq_Run<-metadata_filtered%>%
+  select(Sample, Run_No) %>% 
+  deframe()
+
+RA.df_phy$MiSeq_Run<-MiSeq_Run[match(RA.df_phy$Sample.ID, names(MiSeq_Run))]
+```
+#### Proteobacteria
+```{r}
+ProRA <- filter(RA.df_phy, ASV=="Proteobacteria_1")
+Pro1 <- lm(RA ~ Sample_group, data=ProRA)
+summary(Pro1)
+par(mfrow=c(2,2))
+plot(Pro1)
+
+```
+#### Deinococcota_2
+```{r}
+DeinRA <- filter(RA.df_phy, ASV=="Deinococcota_2")
+Dein2 <- lm(RA ~ Sample_group, data=DeinRA)
+summary(Dein2)
+par(mfrow=c(2,2))
+plot(Dein2)
+
+```
+#### Firmicutes_3
+```{r}
+FirmRA <- filter(RA.df_phy, ASV=="Firmicutes_3")
+Firm3 <- lm(RA ~ Sample_group, data=FirmRA)
+summary(Firm3)
+par(mfrow=c(2,2))
+plot(Firm3)
+```
+#### Actinobacteriota_4
+```{r}
+ActinRA <- filter(RA.df_phy, ASV=="Actinobacteriota_4")
+Actin4 <- lm(RA ~ Sample_group, data=ActinRA)
+summary(Actin4)
+par(mfrow=c(2,2))
+plot(Actin4)
+```
+#### Bacteroidota_6
+```{r}
+BacterRA <- filter(RA.df_phy, ASV=="Actinobacteriota_4")
+Bacter6 <- lm(RA ~ Sample_group, data=BacterRA)
+summary(Bacter6)
+par(mfrow=c(2,2))
+plot(Bacter6)
+```
+#### Bdellovibrionota_5
+```{r}
+BdellRA <- filter(RA.df_phy, ASV=="Bdellovibrionota_5")
+Bdell5 <- lm(RA ~ Sample_group, data=BdellRA)
+summary(Bdell5)
+par(mfrow=c(2,2))
+plot(Bdell5)
+```
+#### Myxococcota_7
+```{r}
+myxlRA <- filter(RA.df_phy, ASV=="Myxococcota_7")
+myxl <- lm(RA ~ Sample_group, data=myxlRA)
+summary(myxl)
+par(mfrow=c(2,2))
+plot(myxl)
+```
+#### Acidobacteriota_8
+```{r}
+acidoRA <- filter(RA.df_phy, ASV=="Acidobacteriota_8")
+acido <- lm(RA ~ Sample_group, data=acidoRA)
+summary(acido)
+par(mfrow=c(2,2))
+plot(acido)
+```
+#### Planctomycetota_9
+```{r}
+plancRA <- filter(RA.df_phy, ASV=="Planctomycetota_9")
+planc <- lm(RA ~ Sample_group, data=plancRA)
+summary(planc)
+par(mfrow=c(2,2))
+plot(planc)
+```
+#### Chloroflexi_10
+```{r}
+chloroRA <- filter(RA.df_phy, ASV=="Chloroflexi_10")
+chloro <- lm(RA ~ Sample_group, data=chloroRA)
+summary(chloro)
+par(mfrow=c(2,2))
+plot(chloro)
+```
+#### Adjusted P-Values
+```{r}
+lmp <- function (modelobject) {
+    if (class(modelobject) != "lm") stop("Not an object of class 'lm' ")
+    f <- summary(modelobject)$fstatistic
+    p <- pf(f[1],f[2],f[3],lower.tail=F)
+    attributes(p) <- NULL
+    return(p)
+}
+
+p.adjust(c("0.812", "0.518", "0.819", "0.894", "0.819", "0.003", "0.168", "0.317", "0.323", "0.302"), method = "BH")
+
+phy_R2 <- c(summary(Pro1)$r.squared, summary(Dein2)$r.squared, summary(Actin4)$r.squared, summary(Firm3)$r.squared, summary(Bacter6)$r.squared, summary(Bdell5)$r.squared, summary(myxl)$r.squared, summary(planc)$r.squared, summary(chloro)$r.squared, summary(acido)$r.squared)
+
+phy_pval <- c(lmp(Pro1), lmp(Dein2), lmp(Actin4), lmp(Firm3), lmp(Bacter6), lmp(Bdell5), lmp(myxl), lmp(planc), lmp(chloro), lmp(acido))
+
+phy_adjpval <- p.adjust(phy_pval, method = "BH")
+
+phy_names <- mean_ab_groups_phy$Phylum
+
+phy_lm_table <- data.frame(phy_names, phy_R2, phy_pval, phy_adjpval)
+print(phy_lm_table)
+
+print(xtable(phy_lm_table, type = "latex", digits = 3), file="Phylum_LM_results.tex")
+```
+
+## Number of Genera
+```{r}
+phy_genus<-tax_glom(ps_filtered, "Genus")
+phy_genus
+
+```
+
+## Plot Top 20 Most Abundant OTU/ASVs and the rest as residuals
+```{r}
+#Top 20 otus 
+OTU1<- as(otu_table(ps_filtered), "matrix")
+if(taxa_are_rows(ps_filtered)){OTU1 <- t(OTU1)}
+OTU1.t <-t(OTU1)
+otu_table_ord<-OTU1.t[order(rowSums(OTU1.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA <- t(t(otu_table_ord)/colSums(otu_table_ord))
+stack.dfT <- cbind(data.frame(Sample.ID=rownames(metadata_filtered)), t(otu_table_ord_RA[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata_filtered$Sample <-rownames(metadata_filtered)
+
+
+Sample_group<-metadata_filtered%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+MiSeq_Run <- metadata_filtered %>%
+  select(Sample, Run_No)
+
+stack.dfT$Sample_group<-Sample_group[match(stack.dfT$Sample.ID, names(Sample_group))]
+
+##overall mean abundances 
+mean_ab_groups<-stack.dfT%>%
+  group_by(ASV)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)%>%
+  arrange(desc(mean_percentage))
+write.table(mean_ab_groups,file="Relative_abundance_summary_Top20_OTU.txt ")
+print(xtable(mean_ab_groups, type = "latex", digits = 4), file = "Relative_abundance_summary_Top20_OTU.tex")
+
+##mean abundances stratified by Sample_type
+
+mean_ab_groups_str<-stack.dfT%>%
+  group_by(ASV, Sample_group, Sample.ID)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100, Group=ifelse(Sample_group=="blank","STGG","rna_protect"))
+
+cols<-c("gray75", "#d28dcb",
+"#5eb847",
+"#7166d9",
+"#a8b635",
+"#b756c0",
+"#5bbe7f",
+"#d74b91",
+"#56802f",
+"#696fba",
+"#d59c34",
+"#5f9ed7",
+"#cb5329",
+"#4cc2bc",
+"#d34359",
+"#39855f",
+"#9d4c79",
+"#acb064",
+"#c06762",
+"#826b2b",
+"#cf8a57") 
+
+##plot 
+ggplot(mean_ab_groups_str, aes(x =Sample.ID, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack",) + 
+  ylab("Relative abundance(%)")+
+  xlab("Sample")+
+  scale_fill_manual(values = cols)+ 
+  #facet_grid(.~Group)+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom", legend.text = element_text(face = "italic")) +
+  guides(fill = guide_legend(ncol = 3)) + 
+  ggsave("Relative_abundances_top20OTUs.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+
+```
+To examine the microbial composition of each sample at a higher taxonomic resolution, the top 20 most abundant ASVs were calculated, and their relative abundance in each sample plotted using a stacked bar chart. Tepidimonas_1 was the most abundant ASV across all samples with a mean relative abundance of 22.6%. Curvibacter_2 and Thermus_3 were the second most abundant ASVs at 10.1% and 8.7%. 
+
+Of these top 20 most abundant ASVs, the vast majority belong to water and soil associated genera that have been previously described as known contaminants found in sequenced `blank` controls (Salter et al., 2014). The presence of an ASV belonging to the Staphylococcus genus was also noted as bacteria belonging to this genus are often found as part of the skin microbiota but some may colonise the upper respiratory tract.
+
+```{r}
+ggplot(data = mean_ab_groups, aes(x=ASV, y=mean_percentage, fill=ASV))+
+  geom_bar(stat="identity")+
+  ylab("Relative abundance (%)")+
+  xlab(NULL)+
+  scale_fill_manual(values = cols)+ 
+  #facet_grid(.~Group)+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom", legend.text = element_text(face = "italic")) +
+  scale_x_discrete(label=NULL)+
+  guides(fill = guide_legend(ncol = 3))+
+  ggsave("Relative_abundances_top20OTUs_Bar_Chart.pdf", units="in", width=8, height=6, dpi=300)
+
+print(mean_ab_groups)
+
+```
+## Plot Top20 OTU/ASVs by Sample Type
+```{r}
+group.labs <- c("blank"="Blank", "rna_protect"="RNA protect", "stgg"="STGG")
+
+ggplot(mean_ab_groups_str, aes(x =Sample.ID, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack",) + 
+  ylab("Relative abundance(%)")+
+  xlab("Sample")+
+  scale_fill_manual(values = cols)+ 
+  scale_x_discrete(label=NULL)+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom", legend.text = element_text(face = "italic")) +
+  guides(fill = guide_legend(ncol = 3)) + 
+  facet_wrap(~Sample_group, labeller = labeller(Sample_group=group.labs), scales="free", nrow = 1,) +
+    ggsave("Relative_abundances_top20OTUs_Sample_type.pdf", units="in", width=10, height=5, dpi=300)
+```
+Upon dividing samples into groups according to sample types a number of trends become more obvious. Firstly a strong distinction between two groups of environmental control blanks emerged. The samples within each cluster from the enironmental control sample type shared a relatively stable and uniform microbial profile, however the composition of each control blank cluster appeared markedly different. 
+
+Grouped by miseq run
+```{r}
+RA.df <- stack.dfT%>%
+  mutate(log10_RA=log10(RA+1))%>%
+  mutate(sqrt_RA=sqrt(RA))
+
+MiSeq_Run<-metadata_filtered%>%
+  select(Sample, Run_No) %>% 
+  deframe()
+
+RA.df$MiSeq_Run<-MiSeq_Run[match(RA.df$Sample.ID, names(MiSeq_Run))]
+```
+## Boxplot of top 20 RA
+```{r}
+pd = position_dodge(width = 0.5) 
+
+ggplot(data = RA.df, aes(x=ASV, y=log10_RA, fill=Sample_group))+
+  stat_boxplot(geom = "errorbar", position = pd, width = 0.25)+
+  geom_boxplot(width = 0.5, position = pd)+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  #geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 1)+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  #ggtitle("Relative Abundance of the Top 20 Most Abundant ASVs
+          #in STGG, RNA protect and Environmental Controls")+
+  ylab("log10(Relative abundance)")+
+  facet_wrap(~ASV, scales="free")+
+  theme_bw()+
+  scale_x_discrete(label=NULL)+
+  ggsave("Relative_abundances_top20ASVs_Boxplot.pdf", units="in", width=14, height=8, dpi=300)
+  #theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")
+```
+### Top 20 RA table
+```{r}
+
+Grouped_RA.df <- RA.df %>%
+  mutate(mean_percentage=RA*100)%>%
+  group_by(ASV, Sample_group) %>%
+  summarise_each(funs(mean)) %>%
+  select(ASV, Sample_group, mean_percentage, log10_RA)%>%
+  arrange(desc(ASV))
+
+print(Grouped_RA.df)
+
+print(xtable(Grouped_RA.df, type = "latex", digits = 3), include.rownames = FALSE, sanitize.text.function=italic, file = "top20_grouped_RA.tex")
+```
+## Linear Model of top 20 Most Abundant RAs
+### Tepidemonas
+```{r}
+
+library(lmerTest)
+
+TepRA <- filter(RA.df, ASV=="Tepidimonas_1")
+Tep <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=TepRA)
+summary(Tep)
+par(mfrow=c(2,2)) # Change the panel layout to 2 x 2
+plot(Tep)
+p1 <- 2.2e-16
+```
+```{r}
+Tep2 <- glm(log10_RA ~ Sample_group + MiSeq_Run, family = poisson, data = TepRA)
+par(mfrow=c(2,2))
+plot(Tep2)
+```
+### Curvibacter
+```{r}
+CurvRA <- filter(RA.df, ASV=="Curvibacter_2")
+Curv <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=CurvRA)
+summary(Curv)
+par(mfrow=c(2,2))
+plot(Curv)
+p2 <- 2.2e-16
+```
+### Thermus_3
+```{r}
+Therm3RA <- filter(RA.df, ASV=="Thermus_3")
+hist(Therm3RA$log10_RA)
+Therm3 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Therm3RA)
+summary(Therm3)
+par(mfrow=c(2,2))
+plot(Therm3)
+
+```
+### Schlegelella_4
+```{r}
+SchlegRA <- filter(RA.df, ASV=="Schlegelella_4")
+Schleg <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=SchlegRA)
+summary(Schleg)
+par(mfrow=c(2,2))
+plot(Schleg)
+```
+### Thermus_5
+```{r}
+Therm5RA <- filter(RA.df, ASV=="Thermus_5")
+Therm5 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Therm5RA)
+summary(Therm5)
+par(mfrow=c(2,2))
+plot(Therm5)
+```
+### Caulobacter_6
+```{r}
+Caul6RA <- filter(RA.df, ASV=="Caulobacter_6")
+Caul6 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Caul6RA)
+summary(Caul6)
+par(mfrow=c(2,2))
+plot(Caul6)
+```
+### Comamonadaceae_7
+```{r}
+Coma7RA <- filter(RA.df, ASV=="Comamonadaceae_7")
+Coma7 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Coma7RA)
+summary(Coma7)
+par(mfrow=c(2,2))
+plot(Coma7)
+```
+### Sphingomonas_8
+```{r}
+Sphing8RA <- filter(RA.df, ASV=="Sphingomonas_8")
+Sphing8 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Sphing8RA)
+summary(Sphing8)
+par(mfrow=c(2,2))
+plot(Sphing8)
+```
+### Bosea_9
+```{r}
+Bos9RA <- filter(RA.df, ASV=="Bosea_9")
+Bos9 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Bos9RA)
+summary(Bos9)
+par(mfrow=c(2,2))
+plot(Bos9)
+```
+### Thermus_thermophilus_10
+```{r}
+Therm10RA <- filter(RA.df, ASV=="Thermus_thermophilus_10")
+Therm10 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Therm10RA)
+summary(Therm10)
+par(mfrow=c(2,2))
+plot(Therm10)
+```
+### Sphingobium_11
+```{r}
+Sphing11RA <- filter(RA.df, ASV=="Sphingobium_11")
+Sphing11 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Sphing11RA)
+summary(Sphing11)
+par(mfrow=c(2,2))
+plot(Sphing11)
+```
+### Pseudomonas_12
+```{r}
+Pseudo12RA <- filter(RA.df, ASV=="Pseudomonas_12")
+Pseudo12 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Pseudo12RA)
+summary(Pseudo12)
+par(mfrow=c(2,2))
+plot(Pseudo12)
+```
+### Methylobacterium_Methylorubrum_13
+```{r}
+Meth13RA <- filter(RA.df, ASV=="Methylobacterium_Methylorubrum_13")
+Meth13 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Meth13RA)
+summary(Meth13)
+par(mfrow=c(2,2))
+plot(Meth13)
+```
+### Ottowia_14
+```{r}
+Otto14RA <- filter(RA.df, ASV=="Ottowia_14")
+Otto14 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Otto14RA)
+summary(Otto14)
+par(mfrow=c(2,2))
+plot(Otto14)
+```
+### Azospirillum_15
+```{r}
+Azo14RA <- filter(RA.df, ASV=="Azospirillum_15")
+Azo14 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Azo14RA)
+summary(Azo14)
+par(mfrow=c(2,2))
+plot(Azo14)
+```
+### Meiothermus_silvanus_16
+```{r}
+Meio16RA <- filter(RA.df, ASV=="Meiothermus_silvanus_16")
+Meio16 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Meio16RA)
+summary(Meio16)
+par(mfrow=c(2,2))
+plot(Meio16)
+```
+
+### Staphylococcus_17
+```{r}
+Staph17RA <- filter(RA.df, ASV=="Staphylococcus_17")
+Staph17 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Staph17RA)
+summary(Staph17)
+par(mfrow=c(2,2))
+plot(Staph17)
+```
+### Nitriliruptoraceae_18
+```{r}
+Nitril18RA <- filter(RA.df, ASV=="Nitriliruptoraceae_18")
+Nitril18 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Nitril18RA)
+summary(Nitril18)
+par(mfrow=c(2,2))
+plot(Nitril18)
+```
+### Paucibacter_19
+```{r}
+Pauci19RA <- filter(RA.df, ASV=="Paucibacter_19")
+Pauci19 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Pauci19RA)
+summary(Pauci19)
+par(mfrow=c(2,2))
+plot(Pauci19)
+```
+### Brevundimonas_20
+```{r}
+Brev20RA <- filter(RA.df, ASV=="Brevundimonas_20")
+Brev20 <- lm(log10_RA ~ Sample_group + MiSeq_Run, data=Brev20RA)
+summary(Brev20)
+par(mfrow=c(2,2))
+plot(Brev20)
+```
+## Combined p-value
+```{r}
+P_Value <- c("2.2e-16", "2.2e-16", "2.2e-16", "2.2e-16", "2.127e-12", "1.056e-12", "2.2e-16", "0.001587", "2.2e-16", "2.2e-16", "1.799e-11", "0.4084", "0.01086", "2.055e-08", "2.626e-11", "1.557e-09", "0.3189", "3.14e-05", "0.001495", "2.499e-10")
+Adjusted_P_Value <- p.adjust(P_Value, method = "BH")
+```
+## Table of p-values
+```{r}
+
+top20_names <- rev(as.vector(mean_ab_groups$ASV)) 
+top20_names <- top20_names[! top20_names %in% "Residuals"]
+
+top20_pval <- c(lmp(Tep), lmp(Curv), lmp(Therm3), lmp(Schleg), lmp(Therm5), lmp(Caul6), lmp(Coma7), lmp(Sphing8), lmp(Bos9), lmp(Therm10), lmp(Sphing11), lmp(Pseudo12), lmp(Meth13), lmp(Otto14), lmp(Azo14), lmp(Meio16), lmp(Staph17), lmp(Nitril18), lmp(Pauci19), lmp(Brev20))
+
+top20_adjpval <- p.adjust(top20_pval, method = "BH")
+
+top20_R2 <- c(summary(Tep)$r.squared, summary(Curv)$r.squared, summary(Therm3)$r.squared, summary(Schleg)$r.squared, summary(Therm5)$r.squared, summary(Caul6)$r.squared, summary(Coma7)$r.squared, summary(Sphing8)$r.squared, summary(Bos9)$r.squared, summary(Therm10)$r.squared, summary(Sphing11)$r.squared, summary(Pseudo12)$r.squared, summary(Meth13)$r.squared, summary(Otto14)$r.squared, summary(Azo14)$r.squared, summary(Meio16)$r.squared, summary(Staph17)$r.squared, summary(Nitril18)$r.squared, summary(Pauci19)$r.squared, summary(Brev20)$r.squared)
+
+top20_pval.df <- data.frame(top20_names, top20_R2, top20_pval, top20_adjpval)
+
+#top20_pval.df <- data.frame(top20_names, P_Value, Adjusted_P_Value)
+
+top20_pval.df <- top20_pval.df %>%
+  rename(ASV = top20_names)
+
+print(top20_pval.df)
+
+write.table(top20_pval.df,file="Top_20_Pval.txt")
+
+italic <- function(x){
+  paste("\textit{",
+        x,
+        "}")
+}
+
+print(xtable(top20_pval.df, digits = c( 0, 0, 3, -3, -3), type = "latex"), sanitize.text.function=italic, include.rownames=FALSE, file = "Top20_pval.tex")
+
+```
+```{r}
+mean_ab_groups_str<-stack.dfT%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100, Group=ifelse(Sample_group=="blank","STGG","rna_protect"))
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("Sample")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))  +
+ggsave("Relative_abundances_top20OTUs_Sample_type2.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+# Calculate the Top 20 most abundant taxa in each sample type
+##STGG
+```{r}
+ps.top20.STGG <- prune_samples(sample_data(ps_filtered)$Sample_type=="stgg", ps_filtered)
+metadata_STGG <- data.frame(sample_data(ps.top20.STGG))
+OTU2<- as(otu_table(ps.top20.STGG), "matrix")
+if(taxa_are_rows(ps.top20.STGG)){OTU2 <- t(OTU2)}
+OTU2.t <-t(OTU2)
+otu_table_ord2<-OTU2.t[order(rowSums(OTU2.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA2 <- t(t(otu_table_ord2)/colSums(otu_table_ord2))
+stack.dfT_STGG <- cbind(data.frame(Sample.ID=rownames(metadata_STGG)), t(otu_table_ord_RA2[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata_STGG$Sample <-rownames(metadata_STGG)
+
+Sample_group2<-metadata_STGG%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_STGG$Sample_group<- Sample_group2
+
+mean_ab_groups_STGG<-stack.dfT_STGG%>%
+  group_by(ASV)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+mean_ab_groups_str_STGG<-stack.dfT_STGG%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str_STGG, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("STGG")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+
+  scale_x_discrete(label=NULL)+
+  ggsave("Relative_abundances_top20OTUs_STGG.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+
+## Blank 514
+```{r}
+ps.top20.b514 <- prune_samples(sample_data(ps_filtered)$Sample_type=="blank", ps_filtered)
+ps.top20.b514 <- prune_samples(sample_data(ps.top20.b514)$Run_No=="514", ps.top20.b514)
+metadata_b514 <- data.frame(sample_data(ps.top20.b514))
+OTU2<- as(otu_table(ps.top20.b514), "matrix")
+if(taxa_are_rows(ps.top20.b514)){OTU2 <- t(OTU2)}
+OTU2.t <-t(OTU2)
+otu_table_ord2<-OTU2.t[order(rowSums(OTU2.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA2 <- t(t(otu_table_ord2)/colSums(otu_table_ord2))
+stack.dfT_b514 <- cbind(data.frame(Sample.ID=rownames(metadata_b514)), t(otu_table_ord_RA2[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata_b514$Sample <-rownames(metadata_b514)
+
+Sample_group2<-metadata_b514%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_b514$Sample_group<- Sample_group2
+
+mean_ab_groups_b514<-stack.dfT_b514%>%
+  group_by(ASV)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+mean_ab_groups_str_b514<-stack.dfT_b514%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str_b514, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("STGG")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+
+  scale_x_discrete(label=NULL)#+
+  #ggsave("Relative_abundances_top20OTUs_b514.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+## Run514
+```{r}
+ps.top20.514 <- prune_samples(sample_data(ps_filtered)$Run_No=="514", ps_filtered)
+
+OTU3<- as(otu_table(ps.top20.514), "matrix")
+if(taxa_are_rows(ps.top20.514)){OTU3 <- t(OTU3)}
+OTU3.t <-t(OTU3)
+otu_table_ord3<-OTU3.t[order(rowSums(OTU3.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA3 <- t(t(otu_table_ord3)/colSums(otu_table_ord3))
+stack.dfT_514 <- cbind(data.frame(Sample.ID=rownames(metadata514)), t(otu_table_ord_RA3[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata514$Sample <-rownames(metadata514)
+
+Sample_group3<-metadata514%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_514$Sample_group<- Sample_group3
+
+mean_ab_groups_str_514<-stack.dfT_514%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)%>%
+  arrange(mean_percentage)
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str_514, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("Sample Type")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+
+  ggsave("Relative_abundances_top20ASVs_Run_514.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+### Were any taxa exclusively found in STGG?
+```{r}
+# Exclusive to STGG
+STGG_truetaxa.df <- full_join(mean_ab_groups_str_STGG, mean_ab_groups_str_b514, "ASV", suffix = c("_STGG", "_Blank")) %>%
+  mutate(Exclusive = is.na(Sample_group_Blank)) %>%
+  select(ASV, mean_percentage_STGG, mean_percentage_Blank, Exclusive) %>%
+  arrange(desc(mean_percentage_STGG))
+
+print(STGG_truetaxa.df)
+
+print(which(STGG_truetaxa.df$Exclusive))
+```
+## RNA
+```{r}
+ps.top20.RNA <- prune_samples(sample_data(ps_filtered)$Sample_type=="rna_protect", ps_filtered)
+metadata_RNA <- data.frame(sample_data(ps.top20.RNA))
+OTU4<- as(otu_table(ps.top20.RNA), "matrix")
+if(taxa_are_rows(ps.top20.RNA)){OTU4 <- t(OTU4)}
+OTU4.t <-t(OTU4)
+otu_table_ord4<-OTU4.t[order(rowSums(OTU4.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA4 <- t(t(otu_table_ord4)/colSums(otu_table_ord4))
+stack.dfT_RNA <- cbind(data.frame(Sample.ID=rownames(metadata_RNA)), t(otu_table_ord_RA4[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata_RNA$Sample <-rownames(metadata_RNA)
+
+Sample_group4<-metadata_RNA%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_RNA$Sample_group<- Sample_group4
+
+mean_ab_groups_str_RNA<-stack.dfT_RNA%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str_RNA, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("RNA Protect")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+
+  scale_x_discrete(label=NULL)+
+  ggsave("Relative_abundances_top20ASVs_RNA_Protect.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+## Blank 523
+```{r}
+ps.top20.b523 <- prune_samples(sample_data(ps_filtered)$Sample_type=="blank", ps_filtered)
+ps.top20.b523 <- prune_samples(sample_data(ps.top20.b523)$Run_No=="523", ps.top20.b523)
+metadata_b523 <- data.frame(sample_data(ps.top20.b523))
+OTU2<- as(otu_table(ps.top20.b523), "matrix")
+if(taxa_are_rows(ps.top20.b523)){OTU2 <- t(OTU2)}
+OTU2.t <-t(OTU2)
+otu_table_ord2<-OTU2.t[order(rowSums(OTU2.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA2 <- t(t(otu_table_ord2)/colSums(otu_table_ord2))
+stack.dfT_b523 <- cbind(data.frame(Sample.ID=rownames(metadata_b523)), t(otu_table_ord_RA2[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata_b523$Sample <-rownames(metadata_b523)
+
+Sample_group2<-metadata_b523%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_b523$Sample_group<- Sample_group2
+
+mean_ab_groups_b523<-stack.dfT_b523%>%
+  group_by(ASV)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+mean_ab_groups_str_b523<-stack.dfT_b523%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str_b523, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("STGG")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+
+  scale_x_discrete(label=NULL)#+
+  #ggsave("Relative_abundances_top20OTUs_b523.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+## Run 523
+```{r}
+ps.top20.523 <- prune_samples(sample_data(ps_filtered)$Run_No=="523", ps_filtered)
+OTU5<- as(otu_table(ps.top20.523), "matrix")
+if(taxa_are_rows(ps.top20.523)){OTU5 <- t(OTU5)}
+OTU5.t <-t(OTU5)
+otu_table_ord5<-OTU5.t[order(rowSums(OTU5.t),decreasing=T),]
+n = 20 # only show top 20 OTUs
+otu_table_ord_RA5 <- t(t(otu_table_ord5)/colSums(otu_table_ord5))
+stack.dfT_523 <- cbind(data.frame(Sample.ID=rownames(metadata523)), t(otu_table_ord_RA5[1:n, ]) %>%
+                     data.frame(check.names = F) %>% 
+                     mutate(Residuals = 1 - rowSums(.))) %>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+metadata523$Sample <-rownames(metadata523)
+
+Sample_group5<-metadata523%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+stack.dfT_523$Sample_group<- Sample_group5
+
+mean_ab_groups_str_523<-stack.dfT_523%>%
+  group_by(ASV, Sample_group)%>%
+  summarise(mean=mean(RA))%>%
+  mutate(mean_percentage=mean*100)
+
+##Plot Stack Bargraph
+ggplot(mean_ab_groups_str_523, aes(x = Sample_group, y = mean_percentage, fill = ASV)) +
+  geom_bar(stat = "identity", position = "stack") + 
+  ylab("Relative abundance(%)")+
+  xlab("Sample Type")+
+  scale_fill_manual(values = cols)+
+  #facet_grid(.~Sample_group, scales = "free")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+
+  ggsave("Relative_abundances_top20ASVs_Run_523.tiff", units="in", width=8, height=5, dpi=300, compression = 'lzw')
+
+```
+
+
+### Were any taxa exclusively found in RNA Protect?
+```{r}
+# Exclusive to STGG
+RNA_truetaxa.df <- full_join(mean_ab_groups_str_RNA, mean_ab_groups_str_b523, "ASV", suffix = c("_RNA", "_Blank")) %>%
+  mutate(Exclusive = is.na(Sample_group_Blank)) %>%
+  select(ASV, mean_percentage_RNA, mean_percentage_Blank, Exclusive) %>%
+  arrange(desc(mean_percentage_RNA))
+
+print(RNA_truetaxa.df)
+
+print(which(RNA_truetaxa.df$Exclusive))
+```
+
+# Biomass
+## X16s_conc_pg_ul
+### Does Biomass Vary with Miseq Run
+```{r}
+ggplot(metadata_filtered, aes(as.factor(Run_No), X16s_conc_pg_ul, colour=as.factor(Run_No)))+
+  geom_boxplot()+
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+```
+
+```{r}
+ggplot(metadata_filtered, aes(x = Sample, y=X16s_conc_pg_ul, fill = Sample_type))+
+  geom_bar(stat = "identity")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")+
+  labs(x = "Sample", y = bquote('16s rRNA Concentration ('*~pg~ mu~l^-1*')'))
+
+```
+
+```{r}
+biomass.data <- metadata_filtered %>%
+  select(Sample_type, Run_No, X16s_conc_pg_ul, PicoGreen)
+hist(biomass.data$X16s_conc_pg_ul)
+
+biomass.data <- biomass.data %>%
+  mutate(log10_X16s=log10(X16s_conc_pg_ul+1))%>%
+  mutate(sqrt_X16s=sqrt(X16s_conc_pg_ul))
+
+hist(biomass.data$log10_X16s)
+hist(biomass.data$sqrt_X16s)
+Bm1 <- wilcox.test(biomass.data$X16s_conc_pg_ul ~ biomass.data$Run_No)
+Bm1
+```
+
+### Does Biomass vary with Sample Type
+```{r}
+ggplot(biomass.data, aes(Sample_type, X16s_conc_pg_ul, fill=Sample_type))+
+  stat_boxplot(geom = "errorbar", width = 0.25)+
+  geom_boxplot( ) +
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))+
+  labs(x="Sample Type", y=bquote('16s rRNA Concentration ('*~pg~ mu~l^-1*')'))+
+  #ggtitle("Biomass of STGG, RNA Protect and Environmental Blank Samples") +
+  theme_bw()+
+  ggsave("Biomass_X16s_Sample_type_BP.pdf", units="in", width=4, height=3, dpi=300)
+
+
+Bm2 <- aov(X16s_conc_pg_ul ~ Sample_type + Run_No, data = biomass.data)
+plot(Bm2)
+```
+
+```{r}
+# Log Transform
+Bm2.1 <- aov(log10_X16s ~ Sample_type + Run_No, data = biomass.data)
+plot(Bm2.1)
+summary(Bm2.1)
+```
+
+```{r}
+# Non-parametric as no model fits a normal distribution
+Bm2.3 <- kruskal.test(X16s_conc_pg_ul ~ Sample_type, data = biomass.data)
+Bm2.3 
+
+# Perform Dunn post Hoc test to identify difference between groups
+Bm2.3.DT <- dunnTest(X16s_conc_pg_ul ~ Sample_type, data = biomass.data, method = "bh")
+Bm2.3.DT
+
+```
+Data could not be transformed to meet assumptions so non-parametric tests were used.
+
+### In run 514?
+```{r}
+biomass.data_514 <- filter(biomass.data, Run_No==514)
+hist(biomass.data_514$X16s_conc_pg_ul)
+hist(biomass.data_514)
+ggplot(metadata514, aes(Sample_type, X16s_conc_pg_ul, colour=Sample_type))+
+  geom_boxplot()+
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+
+Bm3 <- aov(X16s_conc_pg_ul ~ Sample_type, data = metadata514)
+Bm3
+
+```
+### In run 523?
+```{r}
+ggplot(metadata523, aes(Sample_type, X16s_conc_pg_ul, colour=Sample_type))+
+  geom_boxplot()+
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+  
+
+Bm4 <- aov(X16s_conc_pg_ul ~ Sample_type, data = metadata523)
+summary(Bm4)
+```
+## PicoGreen
+### Does BM vary with MiSeq Run?
+```{r}
+ggplot(metadata_filtered, aes(as.factor(Run_No), PicoGreen, colour=as.factor(Run_No)))+
+  geom_boxplot()+
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+
+ggplot(metadata_filtered, aes(x = Sample, y=PicoGreen, fill = Sample_type))+
+  geom_bar(stat = "identity")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")
+
+
+Bm5 <- aov(PicoGreen ~ Run_No, data = metadata_filtered)
+summary(Bm5)
+```
+### Does BM vary with Sample Type?
+```{r}
+
+ggplot(metadata_filtered, aes(Sample_type, PicoGreen, colour=Sample_type))+
+  geom_boxplot( ) +
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+  
+
+Bm6 <- aov(PicoGreen ~ Sample_type, data = metadata_filtered)
+summary(Bm6)
+
+#Perform tukey HSD post Hoc test to identify difference between groups
+Bm6.tukey <- TukeyHSD(Bm6, conf.level = 0.95)
+Bm6.tukey
+```
+### In run 514?
+```{r}
+ggplot(metadata514, aes(Sample_type, PicoGreen, colour=Sample_type))+
+  geom_boxplot()+
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+
+Bm7 <- aov(PicoGreen ~ Sample_type, data = metadata514)
+summary(Bm7)
+```
+### In run 523?
+```{r}
+ggplot(metadata523, aes(Sample_type, PicoGreen, colour=Sample_type))+
+  geom_boxplot()+
+  scale_colour_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  geom_jitter(shape=16, position=position_jitter(0.2))
+  
+
+Bm8 <- aov(PicoGreen ~ Sample_type, data = metadata523)
+summary(Bm8)
+```
+### Is there a correlation between X16s_conc_pg_ul and PicoGreen?
+```{r}
+ggplot(data = metadata_filtered, aes(x=X16s_conc_pg_ul, y=PicoGreen))+
+  geom_point()
+
+ggscatter(metadata_filtered, x = "X16s_conc_pg_ul", y = "PicoGreen", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson",)
+
+ggscatter(metadata_filtered, x = "PicoGreen", y = "X16s_conc_pg_ul", add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "pearson",)
+```
+# Decontamination
+## Inspect library Sizes
+Plot library sizes (number of reads) in each sample as a function of whether that sample was a true positive sample (STGG or RNA Protect) or negative control. As two sample types have been analysed decontam should be done separately for each sample type. 
+### STGG and RNA/Blanks as negative controls
+```{r}
+
+#inspect library sizes 
+library.df <- as.data.frame((sample_data(ps_filtered)))
+library.df$LibrarySize <- sample_sums(ps_filtered)
+library.df <- library.df[order(library.df$LibrarySize),]
+library.df$Index <- seq(nrow(library.df))
+ggplot(data=library.df, aes(x=Index, y=LibrarySize, colour=Sample_type)) +
+  geom_point()
+```
+```{r}
+#Create phlyoseq object containing only STGG and control samples
+psSTGG <- subset_samples(ps_filtered, sample_data(ps_filtered)$Sample_type!="rna_protect")
+
+#inspect library sizes 
+STGG.df <- as.data.frame((sample_data(psSTGG)))
+STGG.df$LibrarySize <- sample_sums(psSTGG)
+STGG.df <- STGG.df[order(STGG.df$LibrarySize),]
+STGG.df$Index <- seq(nrow(STGG.df))
+ggplot(data=STGG.df, aes(x=Index, y=LibrarySize, colour=Sample_type)) +
+  geom_point()
+```
+Whilst the majority of STGG samples fall between 1250 and 5000 reads, blanks were found across all sample sizes accounting for the lowest (~0 reads) and the highest (10,000 reads). No obvious trend or distinction between true samples and controls was observed.
+
+## Frequency
+```{r}
+contamdf.freq <- isContaminant(psSTGG, method = "frequency", conc = "X16s_conc_pg_ul", batch = "Run_No")
+head(contamdf.freq)
+table(contamdf.freq$contaminant)
+head(which(contamdf.freq$contaminant))
+```
+The frequency method has identified 13 ASVs as potential `non-stgg` contaminants. 
+Compare non contaminant ASV (1) with contaminant ASV (19).
+
+```{r}
+set.seed(10)
+plot_frequency(psSTGG, taxa_names(psSTGG)[c(19,1)], conc = "PicoGreen") +
+  xlab("DNA Concentration (")
+
+```
+```{r}
+set.seed(67)
+plot_frequency(psSTGG, taxa_names(psSTGG)[sample(which(contamdf.freq$contaminant),2)], conc="PicoGreen") +
+    xlab("DNA Concentration (PicoGreen fluorescent intensity)")
+```
+
+
+## Prevalence 
+```{r}
+sample_data(psSTGG)$is.neg <- sample_data(psSTGG)$Sample_type == "blank"
+contamdf.prev <- isContaminant(psSTGG, method="prevalence", neg="is.neg", threshold = 0.1)
+table(contamdf.prev$contaminant)
+head(which(contamdf.prev$contaminant))
+```
+### Inspect the number of times these taxa were observed in positive and negative samples
+```{r}
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa.STGG <- transform_sample_counts(psSTGG, function(abund) 1*(abund>0))
+ps.pa.neg.STGG <- prune_samples(sample_data(ps.pa.STGG)$Sample_type == "blank", ps.pa.STGG)
+ps.pa.pos.STGG <- prune_samples(sample_data(ps.pa.STGG)$Sample_type == "stgg", ps.pa.STGG)
+# Make data.frame of prevalence in positive and negative samples
+df.pa.STGG <- data.frame(pa.pos.STGG=taxa_sums(ps.pa.pos.STGG), pa.neg.STGG=taxa_sums(ps.pa.neg.STGG),
+                      contaminant=contamdf.prev$contaminant)
+ggplot(data=df.pa.STGG, aes(x=pa.neg.STGG, y=pa.pos.STGG, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Enivronental Controls)") + ylab("Prevalence (STGG Samples)")
+```
+## Decontam with both sample types
+```{r}
+#Add column to sample data that assgins logic to control samples
+
+sample_data(ps_filtered)$is.neg <- sample_data(ps_filtered)$Sample_type == "blank"
+
+#Identify true (STGG/RNA Protect)
+contamdf.prev.all <- isContaminant(ps_filtered, neg ="is.neg", method = "prevalence", threshold = 0.1, batch = sample_data(ps_filtered)$Run_No)
+head(which(contamdf.prev.all$contaminant))
+
+```
+
+
+
+## isNnotContam
+As samples are of low biomass and a large proportion of sequences are likely to be contaminants `isNotContaminant` {decontam} was used to identify true (STGG) reads from reads derived from environmental contamination.
+```{r}
+#Add column to sample data that assgins logic to control samples
+
+sample_data(ps_filtered)$is.neg <- sample_data(ps_filtered)$Sample_type != "stgg"
+
+#Identify true (STGG)
+notcontamdf <- isNotContaminant(ps_filtered, neg ="is.neg", threshold = 0.5, detailed = TRUE)
+table(notcontamdf$not.contaminant)
+head(which(notcontamdf$not.contaminant))
+print(notcontamdf)
+
+```
+### Inspect the number of times these taxa were observed in positive and negative samples
+```{r}
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa <- transform_sample_counts(ps_filtered, function(abund) 1*(abund>0))
+ps.pa.neg <- prune_samples(sample_data(ps.pa)$Sample_type == "blank", ps.pa)
+ps.pa.pos <- prune_samples(sample_data(ps.pa)$is.neg == "FALSE", ps.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos), pa.neg=taxa_sums(ps.pa.neg),
+                      contaminant=notcontamdf$not.contaminant)
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (STGG Samples)")
+```
+
+
+
+
+### Decontam MiSeq RunNo.514
+```{r}
+sample_data(ps_filtered514)$is.neg <- sample_data(ps_filtered514)$Sample_type == "blank"
+ps_filtered514 = prune_taxa(taxa_sums(ps_filtered514)>0.1, ps_filtered514)
+
+#Identify true (STGG)
+notcontamdf_514 <- isNotContaminant(ps_filtered514, neg ="is.neg", threshold = 0.1, detailed=TRUE)
+table(notcontamdf_514$not.contaminant)
+head(which(notcontamdf_514$not.contaminant))
+select(notcontamdf_514, not.contaminant)
+
+notcontamdf_514_T <- notcontamdf_514 %>%
+  select(not.contaminant) %>%
+  filter(not.contaminant==FALSE)
+
+library(data.table)
+
+notcontamdf_514_T <- setDT(notcontamdf_514_T, keep.rownames = TRUE)[]
+notcontamdf_514_T10 <- slice_head(notcontamdf_514_T, n=10)
+
+```
+```{r}
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa514 <- transform_sample_counts(ps_filtered514, function(abund) 1*(abund>0))
+ps.pa.neg514 <- prune_samples(sample_data(ps.pa514)$Sample_type == "blank", ps.pa514)
+ps.pa.pos514 <- prune_samples(sample_data(ps.pa514)$is.neg == "FALSE", ps.pa514)
+
+# Make data.frame of prevalence in positive and negative samples
+df.pa514 <- data.frame(pa.pos514=taxa_sums(ps.pa.pos514), pa.neg514=taxa_sums(ps.pa.neg514),
+                      NotContaminant514=notcontamdf_514$not.contaminant)
+ggplot(data=df.pa514, aes(x=pa.neg514, y=pa.pos514, color=NotContaminant514)) + 
+  geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (STGG Samples)")
+```
+### Use Boxplot to compare relative abundace of ASVs indicated by `isNotContam`
+
+```{r}
+OTU8<- as(otu_table(ps_filtered514), "matrix")
+OTU8 <- OTU8[rowSums(t(t(OTU8)/colSums(OTU8))>=0.001)>1, ]
+otu_table_ord8<-OTU8[order(-rowSums(OTU8)), ]
+otu_table_ord_RA8 <- t(t(otu_table_ord8)/colSums(otu_table_ord8))
+otu_table_ord_RA8 <- t(otu_table_ord_RA8)
+
+vector1 <-c(notcontamdf_514_T$rn) # create a vector something line that 
+otutable.contam <- otu_table_ord_RA8[,colnames(otu_table_ord_RA8)%in%vector1] # to subset for only otus of interest if ASVs are columns
+otutable.contam.t <- t(otutable.contam)
+
+```
+
+```{r}
+boxplot.dfT_NC514 <- cbind(data.frame(Sample.ID=rownames(metadata514)), t(otutable.contam.t[1:10,]) %>%
+                     data.frame(check.names = F) %>%
+                       mutate(Residuals = 1 - rowSums(.))) %>%
+                       gather(key=ASV, value=RA, -Sample.ID) %>%
+                       mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+Sample_group6<-metadata514%>%
+  select(Sample, Sample_type) %>% 
+  deframe()
+
+boxplot.dfT_NC514$Sample_group6<-Sample_group6[match(boxplot.dfT_NC514$Sample.ID, names(Sample_group6))]
+
+boxplot.dfT_NC514 <- boxplot.dfT_NC514 %>%
+  mutate(RA_percentage=RA*100)%>%
+  mutate(log10_RA=log10(RA_percentage))
+  
+
+ggplot(data = boxplot.dfT_NC514, aes(x=ASV, y=log10_RA, fill=Sample_group6))+
+  geom_boxplot()+
+  ylab("Log10(Relative abundance)")+
+  xlab("Sample")+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom") +
+  ggsave("Relative_abundances_Boxplot_Notcontam514.tiff", units="in", width=8, height=10, dpi=300, compression = 'lzw')
+
+```
+## Decontam RNA Protect as blanks
+```{r}
+ps_NoBlank <- subset_samples(ps_filtered, sample_data(ps_filtered)$Sample_type !="blank")
+sample_data(ps_NoBlank)$is.neg <- sample_data(ps_NoBlank)$Sample_type == "rna_protect"
+
+#Identify true (STGG)
+notcontamdfNoBlank <- isNotContaminant(ps_NoBlank, neg ="is.neg", threshold = 0.5, detailed = TRUE)
+table(notcontamdfNoBlank$not.contaminant)
+head(which(notcontamdfNoBlank$not.contaminant))
+select(notcontamdfNoBlank, not.contaminant)
+```
+
+```{r}
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa.NoBlanks <- transform_sample_counts(ps_NoBlank, function(abund) 1*(abund>0))
+ps.pa.neg.NoBlanks <- prune_samples(sample_data(ps.pa.NoBlanks)$Sample_type == "rna_protect", ps.pa.NoBlanks)
+ps.pa.pos.NoBlanks <- prune_samples(sample_data(ps.pa.NoBlanks)$is.neg == "FALSE", ps.pa.NoBlanks)
+
+# Make data.frame of prevalence in positive and negative samples
+df.pa.NoBlanks <- data.frame(pa.pos.NoBlanks=taxa_sums(ps.pa.pos.NoBlanks), pa.neg.NoBlanks=taxa_sums(ps.pa.neg.NoBlanks),
+                      contaminant.NoBlanks=notcontamdfNoBlank$not.contaminant)
+ggplot(data=df.pa.NoBlanks, aes(x=pa.neg.NoBlanks, y=pa.pos.NoBlanks, color=contaminant.NoBlanks)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+```
+
+# Metagenomeseq
+## Differential Abundance testing for all samples
+```{r}
+# Check zero-inflated distribution of the first ASV in your dataset
+dat <- data.frame(strep=otu_table(ps_filtered514)[1,])%>%t
+hist(dat)
+print(wilcox.test(dat))
+```
+
+## Updated with `fitFeatureModel`
+```{r, error=TRUE}
+# raw sequence count phyloseq
+metaSeq <- phyloseq_to_metagenomeSeq(ps_filtered) 
+
+# internal normalisation
+metaSeq <- cumNorm(metaSeq, p=0.5) 
+
+# formula
+mod <- model.matrix(~ Sample_type+Run_No, pData(metaSeq)) 
+
+# NOT fitZig; gives higher # false-positives
+fit <-  fitFeatureModel(metaSeq, mod) 
+
+
+VP.df <- MRcoefs(fit, number = Inf, alpha = 1, adjustMethod = "BH")
+
+```
+`fitFeatureModel` will not run with all 3 sample types. Is it possible to fix this? 
+For when run with a phyloseq object contianing only two samples types, it will not let me correct for Miseq Run, how might I fix this?
+
+### STGG vs Blank
+```{r}
+ps_SB <- subset_samples(ps_filtered, sample_data(ps_filtered)$Sample_type!="rna_protect")
+ps_SB <- prune_taxa(taxa_sums(ps_SB)>0, ps_SB)
+
+
+metaSeq_SB <- phyloseq_to_metagenomeSeq(ps_SB) # raw sequence count phyloseq
+metaSeq_norm_SB <- cumNorm(metaSeq_SB, p=0.5) # internal normalisation
+mod3_SB <- model.matrix(~ Sample_type, pData(metaSeq_norm_SB)) # formula
+fit_SB <-  fitFeatureModel(metaSeq_norm_SB, mod3_SB) # NOT fitZig; gives higher # false-positives
+VP.df_SB <- MRcoefs(fit_SB, number = Inf, alpha = 1, adjustMethod = "BH") # extract all output (not only significant)
+VP.df_SB
+
+```
+#### STGG vs BLank Volcano plot
+```{r}
+EnhancedVolcano(VP.df_SB,lab = rownames(VP.df_SB),x = 'logFC',y = 'adjPvalues', 
+                #selectLab = c("Corynebacterium_44", "Lactococcus_31", "Thermus_thermophilus_10"),
+                pointSize = 3.0, labSize = 5, labhjust = 0.5, pCutoff = .02, xlim = c(-7, 7), gridlines.major = TRUE, cutoffLineWidth = 0.2,cutoffLineCol = 'grey30', FCcutoff = .5)#+
+  #ggsave("VolcanoPlot_fitFeatureModel.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+```
+Too many ASVs are identifed as differentially abundant as the batch effect cannot be accounted for in `fitFeatureModel`
+
+### STGG vs RNA_protect
+```{r}
+ps_SR <- subset_samples(ps_filtered, sample_data(ps_filtered)$Sample_type!="blank")
+ps_SR <- prune_taxa(taxa_sums(ps_SR)>0, ps_SR)
+
+metaSeq_SR <- phyloseq_to_metagenomeSeq(ps_SR) # raw sequence count phyloseq
+metaSeq_norm_SR <- cumNorm(metaSeq_SR, p=0.5) # internal normalisation
+mod3_SR <- model.matrix(~ Sample_type, pData(metaSeq_norm_SR)) # formula
+fit_SR <-  fitFeatureModel(metaSeq_norm_SR, mod3_SR) # NOT fitZig; gives higher # false-positives
+VP.df_SR <- MRcoefs(fit_SR, number = Inf, alpha = 1, adjustMethod = "BH") # extract all output (not only significant)
+VP.df_SR
+
+```
+### RNA_protect vs Blanks
+```{r}
+ps_RB <- subset_samples(ps_filtered, sample_data(ps_filtered)$Sample_type!="stgg")
+ps_RB <- prune_taxa(taxa_sums(ps_RB)>0, ps_RB)
+
+metaSeq_RB <- phyloseq_to_metagenomeSeq(ps_RB) # raw sequence count phyloseq
+metaSeq_norm_RB <- cumNorm(metaSeq_RB, p=0.5) # internal normalisation
+mod3_RB <- model.matrix(~ Sample_type, pData(metaSeq_norm_RB)) # formula
+fit_RB <-  fitFeatureModel(metaSeq_norm_RB, mod3_RB) # NOT fitZig; gives higher # false-positives
+VP.df_RB <- MRcoefs(fit_RB, number = Inf, alpha = 1, adjustMethod = "BH") # extract all output (not only significant)
+VP.df_RB
+
+```
+
+Differential abundance testing was instead preformed independently for each miseq run
+### Run 514
+```{r}
+metaSeq514 <- phyloseq_to_metagenomeSeq(ps_filtered514) # raw sequence count phyloseq
+metaSeq514 <- filterData(metaSeq514, present = 5, depth = 2)
+metaSeq_norm514 <- cumNorm(metaSeq514, p=0.5) # internal normalisation
+mod514 <- model.matrix(~ Sample_type, pData(metaSeq_norm514)) # formula
+fit514 <-  fitFeatureModel(metaSeq_norm514, mod514) # NOT fitZig; gives higher # false-positives
+VP.df_514 <- MRcoefs(fit514, number = Inf, alpha = 1, adjustMethod = "BH") # extract all output (not only significant)
+VP.df_514
+print(xtable((head(MRcoefs(fit514))), digits = 4, type = "latex"), file = "DAT_514.tex")
+
+```
+### Run 523
+```{r}
+metaSeq523 <- phyloseq_to_metagenomeSeq(ps_filtered523) # raw sequence count phyloseq
+metaSeq514 <- filterData(metaSeq514, present = 5, depth = 1)
+metaSeq_norm523 <- cumNorm(metaSeq523, p=0.5) # internal normalisation
+mod523 <- model.matrix(~ Sample_type, pData(metaSeq_norm523)) # formula
+fit523 <-  fitFeatureModel(metaSeq_norm523, mod523) # NOT fitZig; gives higher # false-positives
+VP.df_523 <- MRcoefs(fit523, number = Inf, alpha = 1, adjustMethod = "BH") # extract all output (not only significant)
+VP.df_523
+```
+
+### Top 20 Taxa
+#### Run 514
+```{r}
+# Select results of top 20 most abundant taxa in run 514
+top20_514_names <- as.vector(mean_ab_groups_str_514$ASV)
+
+VP.df_top20_514 <- subset(VP.df_514, row.names(VP.df_514) %in% top20_514_names)
+VP.df_top20_514
+```
+### Run 523
+```{r}
+# Select top 20 most abundant taxa in run 523
+top20_523_names <- as.vector(mean_ab_groups_str_523$ASV)
+
+VP.df_top20_523 <- subset(VP.df_523, row.names(VP.df_523) %in% top20_523_names)
+VP.df_top20_523
+```
+
+### Volcano Plot
+```{r}
+# Plot Samples from run 514 as to microbes appear to be differentially abundant
+EnhancedVolcano(VP.df_514,lab = rownames(VP.df_514),x = 'logFC',y = 'adjPvalues', selectLab = c("Moraxella_37","Brevundimonas_149", "Corynebacterium_44", "Lactococcus_31"), pointSize = 3.0, labSize = 5, labhjust = 0.75, pCutoff = .05, xlim = c(-7, 7), gridlines.major = TRUE, cutoffLineWidth = 0.2,cutoffLineCol = 'grey30', FCcutoff = 2)+
+  ggsave("VolcanoPlot_fitFeatureModel.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+```
+### Boxplot of these taxa
+```{r, error=TRUE}
+
+otu_DAT2 <- select(as.data.frame(t(otu_table_ord_RA)), "Moraxella_37","Brevundimonas_149", "Corynebacterium_44", "Lactococcus_31")
+otu_DAT2 <- t(otu_DAT2)
+
+boxplot.dfT_DAT2 <- cbind(data.frame(Sample.ID=rownames(sample_data(ps_filtered))), t(otu_DAT2) %>%
+                     data.frame(check.names = F)) %>%
+                       gather(key=ASV, value=RA, -Sample.ID) %>%
+                       mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+boxplot.dfT_DAT2$Sample_group<-Sample_group[match(boxplot.dfT_DAT2$Sample.ID, names(Sample_group))]
+
+boxplot.dfT_DAT2 <- boxplot.dfT_DAT2 %>%
+  mutate(RA_percentage=RA*100)%>%
+  mutate(log10_RA=log10(RA_percentage+1))
+  
+pd = position_dodge(width = 0.5) 
+
+ggplot(data = boxplot.dfT_DAT2, aes(x=ASV, y=log10_RA, fill=Sample_group))+
+  stat_boxplot(geom = "errorbar", position = pd, width = 0.25)+
+  geom_boxplot(width = 0.5, position = pd)+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Log10(Relative abundance)")+
+  xlab("ASV")+
+  labs(fill= "Sample Type")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "right") +
+  #ggtitle("Relative Abunance of Differentially Abundant ASVs
+          #from Miseq Run No. 514")
+  theme_bw()+
+  ggsave("Relative_abundances_Boxplot_DiffAbundance514.pdf", units="in", width=8, height=3, dpi=300)
+```
+
+### Relative Abundance Table
+```{r}
+DAT_RA.df <- boxplot.dfT_DAT2 %>%
+  group_by(ASV, Sample_group) %>%
+  summarise_each(funs(mean)) %>%
+  select(ASV, Sample_group, RA_percentage, log10_RA)
+
+print(xtable(DAT_RA.df, digits = 3, type = "latex"), include.rownames=FALSE, file = "DAT_RA.tex")
+```
+
+### Heatmap of Differentially abundant taxa
+```{r}
+ps_DAT2 <- subset_taxa(ps_filtered, ASV=="Corynebacterium_44"|ASV=="Lactococcus_31"|ASV=="Moraxella_37"|ASV=="Brevundimonas_149"|ASV=="Pseudomonas_12"|ASV=="Brevundimonas_20")
+ps_DAT2 <- prune_samples(sample_sums(ps_DAT2)>0, ps_DAT2)
+
+plot_heatmap(ps_DAT2, "NMDS", "bray", "Sample_type", low="#4ada85", high="#4f5dd1", na.value="white", sample.order = "Sample_type")+
+  labs(x="Sample_type", y="ASV")+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")
+  ggsave("Abundance_Heatmap_514.pdf")
+
+```
+```{r}
+plot_heatmap(ps_filtered, "NMDS", "bray", "Sample_type", "Family", low="#4ada85", high="#4f5dd1", na.value="white", sample.order = "Sample_type")+
+  labs(x="Sample_type", y="Phyla")+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")
+  #ggsave("Abundance_Heatmap_514.pdf")
+
+
+```
+### Prevalence of Lactococcus 
+``` {r}
+# Absolute abundance of Lactococcus 
+otu_Lac <- as.data.frame(t(otu_table(ps_filtered)))%>%
+  select(Lactococcus_31)
+
+otu_Lac <- t(otu_Lac)
+
+barplot.dfT_Lac <- cbind(data.frame(Sample.ID=rownames(sample_data(ps_filtered))), t(otu_Lac) %>%
+                     data.frame(check.names = F)) %>%
+                       gather(key=ASV, value=Absolute_Abund, -Sample.ID) %>%
+                       mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+barplot.dfT_Lac$Sample_group<-Sample_group[match(barplot.dfT_Lac$Sample.ID, names(Sample_group))]
+
+barplot.dfT_Lac$Extraction_Date<-metadata_filtered$Extraction_date
+
+barplot.dfT_Lac$Extraction_No<-metadata_filtered$Extracno
+
+barplot.dfT_Lac <- barplot.dfT_Lac %>%
+  mutate(Sample_name = fct_reorder(Sample.ID, Extraction_Date))
+
+ggplot(data = barplot.dfT_Lac, aes(x=Extraction_Date, y=Absolute_Abund, fill = Sample_group))+
+  geom_bar(stat = "identity")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")+
+  ylab("Absolute Abundance")+
+  xlab("Sample")
+```
+Not properly arranged by date.
+
+### Abundance over time
+```{r}
+
+
+barplot.dfT_Lac2 <- barplot.dfT_Lac %>%
+  filter(Sample_group=="stgg") %>%
+  arrange(Extraction_Date) %>%
+  mutate(Sample_name = fct_reorder(Sample.ID, Extraction_Date))
+
+ggplot(data = barplot.dfT_Lac2, aes(x=Sample_name, y=Absolute_Abund, fill = Sample_group))+
+  geom_bar(stat = "identity")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")+
+  ylab("Absolute Abundance")+
+  xlab("Sample")+
+  ggtitle("Absolute Abundance of Lactococcus_31 Arranged by Extraction Date")
+```
+### Abundance in each extraction number
+```{r}
+
+ggplot(data = barplot.dfT_Lac2, aes(x=Sample_name, y=Absolute_Abund, fill = as.factor(Extraction_No)))+
+  geom_bar(stat = "identity")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")+
+  ylab("Absolute Abundance")+
+  xlab("Sample")+
+  scale_fill_discrete(name = "Extraction No.")+
+  ggsave("STGG_samplesbydate.pdf", units="in", width=8, height=5, dpi=300)
+```
+#### Mean Absolute Abundance
+```{r}
+mean(barplot.dfT_Lac2$Absolute_Abund)
+
+```
+
+#### Mean Relative Abundance
+```{r}
+# Filter Lactococcus_31
+Lac.df <- filter(boxplot.dfT_DAT2, ASV=="Lactococcus_31")
+
+mean(Lac.df$RA_percentage)
+```
+
+```{r, error=TRUE}
+# What percentage of samples contained Lactococcus_31
+Lac.df$Lac_present <- Lac.df$RA>0
+sum(Lac.df$Lac_present)/nrow(Lac.df)*100
+
+sum(Lac.df$Lac_present)
+sum(Lac.df$Lac_present)/nrow(boxplot.dfT_DAT2)*100
+
+Lac.df.prev = Lac.df %>%
+  count(Sample_group, Lac_present) %>%
+  filter(Lac_present==TRUE)
+
+Sample_type_N <- Lac.df %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg', Sample_group))
+
+Lac.df.prev$Total <- Sample_type_N$Total
+Lac.df.prev = Lac.df %>%
+  count(Sample_group, Lac_present) %>%
+  filter(Lac_present==TRUE)
+
+
+Lac.df.prev$Total <- "20"
+
+Lac.df.prev <- Lac.df.prev %>%
+  mutate(Prevalence = (n/20)*100) %>%
+  mutate(Lower=as.numeric(c("21.04")))%>%
+  mutate(Upper=as.numeric(c("9.76")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper)
+
+
+  
+# Bar Plot Showing prevalence of Strep
+ggplot(data = Lac.df.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2, position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+
+# Are ASVs from Streptococcus and Staphylococcus genus more abundant in STGG?
+```{r}
+# Agglomerate at genus level
+ps_SS_genus = tax_glom(ps_filtered, taxrank = "Genus")
+
+#Extract OTUs at Genus level
+otu_SS_genus <- ps_SS_genus%>%
+  otu_table%>%
+  as("matrix")%>%
+  magrittr::set_rownames(paste(tax_table(ps_SS_genus)[,"Genus"], seq(1:length(tax_table(ps_SS_genus)[,"Genus"])), sep = "_"))%>%
+  data.frame(.)
+
+##Convert into RA
+otu_SS_RA <- t(otu_SS_genus)/colSums(otu_SS_genus)
+
+otu_SS_RA <- t(select(as.data.frame(otu_SS_RA), "Staphylococcus_14", "Streptococcus_25"))
+
+boxplot.SS_RA <- cbind(data.frame(Sample.ID=rownames(metadata_filtered)), t(otu_SS_RA))%>% 
+  data.frame(check.names = F)%>%
+  gather(key=Genus, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(Genus, levels = rev(unique(Genus))))
+
+
+boxplot.SS_RA$Sample_group <- Sample_group[match(boxplot.SS_RA$Sample.ID, names(Sample_group))]
+
+boxplot.SS_RA <- boxplot.SS_RA %>%
+  mutate(RA_percentage=RA*100)%>%
+  mutate(log10_RA=log10(RA+1))%>%
+  mutate(sqrt_RA=sqrt(RA))
+```
+## What Proportion of samples contained Staph/Strep
+```{r}
+boxplot.SS_RA$SS_present <- boxplot.SS_RA$RA>0
+sum(boxplot.SS_RA$SS_present)/nrow(boxplot.SS_RA)*100
+
+```
+58.5% of samples contained Staphylococcus or Streptococcus or Staphylococcus.
+
+## Prevalence of Streptococcus in each sample type
+```{r}
+Strep <- filter(boxplot.SS_RA, ASV == "Streptococcus_25")
+sum(Strep$SS_present)
+sum(Strep$SS_present)/nrow(boxplot.SS_RA)*100
+Strep.prev = Strep %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Strep %>%
+  count(Sample_group)%>%
+  rename(Total=n)
+
+Strep.prev$Total <- Sample_type_N$Total
+
+Strep.prev <- Strep.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("16.03", "18.86", "21.71")))%>%
+  mutate(Upper=as.numeric(c("19.01", "30.56", "16.88")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper)
+
+
+  
+# Bar Plot Showing prevalence of Strep
+ggplot(data = Strep.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus in STGG, RNA Protect
+          and Enivornmental Control Samples")+
+  ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+Prevalence, defined as the percentage of total samples from each sample type that contained Streptococcus. Streptococcus was present in 65% of STGG samples, 28.6% of RNA Protect samples and 38.5% of environmental control samples.
+
+## Prevalence of Staphylococcus in each sample type
+```{r}
+Staph <- filter(boxplot.SS_RA, ASV == "Staphylococcus_14")
+sum(Staph$SS_present)
+sum(Staph$SS_present)/nrow(boxplot.SS_RA)*100
+Staph.prev = Staph %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Staph.prev$Total <- Sample_type_N$Total
+
+Staph.prev <- Staph.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("19.16", "37.02", "21.34")))%>%
+  mutate(Upper=as.numeric(c("13.22", "11.72", "18.12")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper)
+
+
+  
+# Bar Plot Showing prevalence of Staph
+ggplot(data = Staph.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Staphylococcus in STGG, RNA Protect 
+          and Enivornmental Control Samples")+
+  ggsave("Prevanlence_Staph_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+## Relative Abundance of Staphylococcus and Stretococcus
+```{r}
+#boxplot.SS_RA_T <- filter(boxplot.SS_RA, SS_present==TRUE)
+
+hist(boxplot.SS_RA$RA_percentage)
+hist(boxplot.SS_RA$log10_RA)
+
+ggplot(data = boxplot.SS_RA, aes(x=ASV, y=log10_RA, fill=Sample_group))+
+  stat_boxplot(geom = "errorbar", position = pd, width = 0.25)+
+  geom_boxplot(width = 0.5, position = pd)+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  #geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 1)+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  ggtitle("Relative Abundance of Streptococcus and Staphylococcus
+          in STGG, RNA protect and Environmental Controls")+
+  ylab("log10(Relative abundance)")+
+  xlab("ASV")+
+  #theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom") +
+  ggsave("Relative_abundances_Boxplot_SS_RA.tiff", units="in", width=6, height=4, dpi=300, compression = 'lzw')
+
+```
+## Check Statistical Significance
+```{r, error=TRUE}
+Strep_T <- filter(Strep, SS_present==TRUE)
+
+
+library(pscl)
+
+shapiro.test(Strep$log10_RA)
+ss1 <- glm(log10_RA ~ Sample_group, family = poisson, Strep)
+plot(ss1)
+summary(ss1)
+
+Staph_T <- filter(Staph, SS_present==TRUE)
+ss2 <- zeroinfl(log10_RA ~ Sample_group, family = poisson, Staph)
+plot(ss2)
+summary(ss2)
+
+ss3 <- aov(log10_RA ~ Sample_group+ASV, boxplot.SS_RA_T)
+ss3
+```
+Relative abundance could not be transformed to normal distribution so Kruskal-Wallis test (non-parametric) was used to determine the statistical significance of any difference in RA between sample types. No significant difference was observed between 
+
+# Staph/Strep ASVs
+```{r}
+OTU9<- as(otu_table(ps_filtered), "matrix")
+OTU9 <- OTU9[rowSums(t(t(OTU8)/colSums(OTU9))>=0.001)>1, ]
+otu_table_ord9<-OTU9[order(-rowSums(OTU9)), ]
+otu_table_ord_RA9 <- t(t(otu_table_ord9)/colSums(otu_table_ord9))
+otu_table_ord_RA9 <- as.data.frame(otu_table_ord_RA9)
+
+otu_SS_ASV <- filter(otu_table_ord_RA9, grepl('Staphylococcus|Streptococcus', row.names(otu_table_ord_RA9)))
+```
+
+## Prevalence
+```{r}
+boxplot.SS_RA2 <- cbind(data.frame(Sample.ID=rownames(metadata_filtered)), t(otu_SS_ASV))%>% 
+  data.frame(check.names = F)%>%
+  gather(key=ASV, value=RA, -Sample.ID) %>% 
+  mutate(ASV = factor(ASV, levels = rev(unique(ASV))))
+
+
+boxplot.SS_RA2$Sample_group <- Sample_group[match(boxplot.SS_RA2$Sample.ID, names(Sample_group))]
+
+boxplot.SS_RA2 <- boxplot.SS_RA2 %>%
+  mutate(RA_percentage=RA*100)%>%
+  mutate(log10_RA=log10(RA+1))%>%
+  mutate(sqrt_RA=sqrt(RA))
+```
+### What percetage of samples contained Staph or Strep
+```{r}
+boxplot.SS_RA2$SS_present <- boxplot.SS_RA2$RA>0
+sum(boxplot.SS_RA2$SS_present)/nrow(boxplot.SS_RA2)*100 #not correct
+```
+
+### Staphylococcus_17
+```{r}
+Sta17 <- filter(boxplot.SS_RA2, ASV == "Staphylococcus_17")
+sum(Sta17$SS_present)
+sum(Sta17$SS_present)/nrow(boxplot.SS_RA2)*100
+Sta17.prev = Sta17 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Sta17 %>%
+  count(Sample_group)%>%
+  rename(Total=n)
+
+Sta17.prev$Total <- Sample_type_N$Total
+Sta17.prev$ASV <- "Staphylococcus_17"
+
+Sta17.prev <- Sta17.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("19.00846", "37.02429", "20.79")))%>%
+  mutate(Upper=as.numeric(c("16.03154", "11.71571", "21.62")))%>%
+  mutate(not_present=Total-n)%>%
+  select(Sample_group, n, not_present, Total, Prevalence, Lower, Upper, ASV)
+
+# Is prevalence of each sample group independent or related
+sta17.prop <- prop.test(x=Sta17.prev$n, n=Sta17.prev$Total, conf.level = 0.95, correct = FALSE)
+sta17.prop
+  
+# Bar Plot Showing prevalence of Sta17
+ggplot(data = Sta17.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_17 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+### Streptococcus_34
+```{r}
+Str34 <- filter(boxplot.SS_RA2, ASV == "Streptococcus_34")
+sum(Str34$SS_present)
+sum(Str34$SS_present)/nrow(boxplot.SS_RA2)*100
+Str34.prev = Str34 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Str34 %>%
+  count(Sample_group)%>%
+  rename(Total=n)
+
+Str34.prev$Total <- Sample_type_N$Total
+Str34.prev$ASV <- "Streptococcus_34"
+
+Str34.prev <- Str34.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("7.53846", "11.71571", "19.18")))%>%
+  mutate(Upper=as.numeric(c("17.44154", "37.02429", "20.79")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+# Is prevalence of each sample group independent or related
+chisq.test(Str34$Sample_group, Str34$SS_present) #ns
+
+str34.prop <- prop.test(x=Str34.prev$n, n=Str34.prev$Total,  conf.level = 0.95, correct = FALSE)
+str34.prop
+
+str34.PW <- pairwise.prop.test(x=Str34.prev$n, n=Str34.prev$Total, p.adjust.method = "BH")
+str34.PW
+
+print(xtable(str34.PW$p.value, type = "latex", digits = 3), file = "Str34.prev_pairwise.tex")
+
+# Bar Plot Showing prevalence of Str34
+ggplot(data = Str34.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_34 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+### Staphylococcus_51
+```{r}
+Sta51 <- filter(boxplot.SS_RA2, ASV == "Staphylococcus_51")
+sum(Sta51$SS_present)
+sum(Sta51$SS_present)/nrow(boxplot.SS_RA2)*100
+Sta51.prev = Sta51 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Sta51 %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg|blank', Sample_group))
+
+
+Sta51.prev$Total <- Sample_type_N$Total
+Sta51.prev$ASV <- "Staphylococcus_51"
+
+Sta51.prev <- Sta51.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("7.53846", "4.11")))%>%
+  mutate(Upper=as.numeric(c("17.44154", "18.61")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+sta51.prop <- prop.test(x=Sta51.prev$n, n=Sta51.prev$Total,  conf.level = 0.95, correct = FALSE)
+sta51.prop
+  
+# Bar Plot Showing prevalence of Sta51
+ggplot(data = Sta51.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Staphylococcus_51 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+### Streptococcus_69
+```{r}
+Str69 <- filter(boxplot.SS_RA2, ASV == "Streptococcus_69")
+sum(Str69$SS_present)
+sum(Str69$SS_present)/nrow(boxplot.SS_RA2)*100
+Str69.prev = Str69 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Str69 %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg|blank', Sample_group))
+
+
+Str69.prev$Total <- Sample_type_N$Total
+Str69.prev$ASV <- "Streptococcus_69"
+
+Str69.prev <- Str69.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("10.72077", "4.11")))%>%
+  mutate(Upper=as.numeric(c("18.64923", "18.61")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+str69.prop <- prop.test(x=Str69.prev$n, n=Str69.prev$Total,  conf.level = 0.95, correct = FALSE)
+str69.prop
+  
+# Bar Plot Showing prevalence of Str69
+ggplot(data = Str69.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_69 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+### Streptococcus_90
+```{r}
+Str90 <- filter(boxplot.SS_RA2, ASV == "Streptococcus_90")
+sum(Str90$SS_present)
+sum(Str90$SS_present)/nrow(boxplot.SS_RA2)*100
+Str90.prev = Str90 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Str90 %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg|blank', Sample_group))
+
+
+Str90.prev$Total <- Sample_type_N$Total
+Str90.prev$ASV <- "Streptococcus_90"
+
+Str90.prev <- Str90.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("5.552308", "11.93")))%>%
+  mutate(Upper=as.numeric(c("16.447692", "21.6")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+str90.prop <- prop.test(x=Str90.prev$n, n=Str90.prev$Total,  conf.level = 0.95, correct = FALSE)
+str90.prop
+  
+# Bar Plot Showing prevalence of Str90
+ggplot(data = Str90.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_90 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+### Streptococcus_195
+```{r}
+Str195 <- filter(boxplot.SS_RA2, ASV == "Streptococcus_195")
+sum(Str195$SS_present)
+sum(Str195$SS_present)/nrow(boxplot.SS_RA2)*100
+Str195.prev = Str195 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Str195 %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg|blank', Sample_group))
+
+
+Str195.prev$Total <- Sample_type_N$Total
+Str195.prev$ASV <- "Streptococcus_195"
+
+Str195.prev <- Str195.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("3.136154", "4.11")))%>%
+  mutate(Upper=as.numeric(c("15.693846", "18.61")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+str195.prop <- prop.test(x=Str195.prev$n, n=Str195.prev$Total,  conf.level = 0.95, correct = FALSE)
+str195.prop
+  
+# Bar Plot Showing prevalence of Str195
+ggplot(data = Str195.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_195 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+### Streptococcus_216
+```{r}
+Str216 <- filter(boxplot.SS_RA2, ASV == "Streptococcus_216")
+sum(Str216$SS_present)
+sum(Str216$SS_present)/nrow(boxplot.SS_RA2)*100
+Str216.prev = Str216 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Str216 %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg|rna_protect', Sample_group))
+
+
+Str216.prev$Total <- Sample_type_N$Total
+Str216.prev$ASV <- "Streptococcus_216"
+
+Str216.prev <- Str216.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("11.71571", "4.11")))%>%
+  mutate(Upper=as.numeric(c("37.02429", "18.61")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+str216.prop <- prop.test(x=Str216.prev$n, n=Str216.prev$Total,  conf.level = 0.95, correct = FALSE)
+str216.prop
+  
+# Bar Plot Showing prevalence of Str216
+ggplot(data = Str216.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_216 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+### Streptococcus_303
+```{r}
+Str303 <- filter(boxplot.SS_RA2, ASV == "Streptococcus_303")
+sum(Str303$SS_present)
+sum(Str303$SS_present)/nrow(boxplot.SS_RA2)*100
+Str303.prev = Str303 %>%
+  count(Sample_group, SS_present) %>%
+  filter(SS_present==TRUE)
+
+Sample_type_N <- Str303 %>%
+  count(Sample_group)%>%
+  rename(Total=n)%>%
+  filter(grepl('stgg', Sample_group))
+
+
+Str303.prev$Total <- Sample_type_N$Total
+Str303.prev$ASV <- "Streptococcus_303"
+
+Str303.prev <- Str303.prev %>%
+  mutate(Prevalence = (n/Total)*100) %>%
+  mutate(Lower=as.numeric(c("7.21")))%>%
+  mutate(Upper=as.numeric(c("20.1")))%>%
+  select(Sample_group, n, Total, Prevalence, Lower, Upper, ASV)
+
+
+  
+# Bar Plot Showing prevalence of Str303
+ggplot(data = Str303.prev, aes(x=Sample_group, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("Sample Type")+
+  ggtitle("Prevalence of Streptococcus_303 in STGG, RNA Protect
+          and Enivornmental Control Samples")#+
+  #ggsave("Prevanlence_Strep_Bar.tiff", units="in", width=6, height=5, dpi=300, compression = 'lzw')
+```
+
+### Combined Bar Chart of All SS ASVs
+```{r}
+boxplot.SS.prev <- bind_rows(Sta17.prev, Sta51.prev, Str34.prev, Str69.prev, Str90.prev, Str195.prev, Str216.prev, Str303.prev, .id = NULL) %>%
+  select(Sample_group, ASV, n, Prevalence, Lower, Upper)
+
+print(xtable(boxplot.SS.prev, type = "latex", digits = 3), file = "SS_Prevalence_Table.tex")
+
+# Bar Plot Showing prevalence
+ggplot(data = boxplot.SS.prev, aes(x=ASV, y=Prevalence, fill=Sample_group))+
+  geom_bar(stat = "identity", color="black", position=position_dodge()) +
+  geom_errorbar(aes(ymin=Prevalence-Lower, ymax=Prevalence+Upper), width=.2,
+                 position=position_dodge(.9))+
+  scale_fill_manual(name = "Sample Type", label = c("Blank", "RNA protect", "STGG"), values = wes_palette(n=3, name = "FantasticFox1"))+
+  ylab("Prevalence (%)")+
+  xlab("ASV")+
+  theme_bw()+
+  theme(axis.text.x = element_text(face = "italic"))+
+  #ggtitle("Prevalence of Streptococcus and Staphylococcus ASVs in STGG, RNA Protect and Enivornmental Control Samples")+
+  ggsave("Prevanlence_SS_ASV_Bar.pdf", units="in", width=12, height=5, dpi=300)
+```
+
+### Table of Chi Squared
+```{r}
+ChSq <- c(sta17.prop$statistic, str34.prop$statistic, sta51.prop$statistic, str69.prop$statistic, str90.prop$statistic, str195.prop$statistic, str216.prop$statistic, NA)
+
+SS.prev_pval <- c(sta17.prop$p.value, str34.prop$p.value, sta51.prop$p.value, str69.prop$p.value, str90.prop$p.value, str195.prop$p.value, str216.prop$p.value, NA)
+
+SS.prev_adjpval <- p.adjust(SS.prev_pval, method = "BH")
+
+SS_names <- c("Staphylococcus_17", "Streptococcus_34", "Staphylococcus_51", "Streptococcus_69", "Streptococcus_90", "Streptococcus_195", "Streptococcus_216", "Streptococcus_303")
+
+SS.prev.df <- data.frame(SS_names, ChSq, SS.prev_pval, SS.prev_adjpval)
+
+print(xtable(SS.prev.df, type = "latex", digits = 3), file = "SS_Prevalence_Pval.tex")
+```
+
+## Relative Abundancee of Each Staph/Strep ASV
+```{r}
+pd = position_dodge(width = 0.5) 
+
+ggplot(data = boxplot.SS_RA2, aes(x=ASV, y=log10_RA, fill=Sample_group))+
+  stat_boxplot(geom = "errorbar", position = pd, width = 0.25)+
+  geom_boxplot(width = 0.5, position = pd)+
+  scale_fill_manual(values = wes_palette(n=3, name = "FantasticFox1"))+
+  #geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 1)+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  #ggtitle("Relative Abundance of Staphylococcus and Streptococcus ASVs
+          #in STGG, RNA protect and Environmental Controls")+
+  ylab("log10(Relative abundance)")+
+  scale_x_discrete(label=NULL)+
+  facet_wrap(~ASV, scales="free")+
+  theme_bw()+
+  ggsave("Relative_Abundance_SS_ASV_Bar.pdf", units="in", width=8, height=5, dpi=300)
+  #theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), legend.position = "bottom")
+```
+
+## Statistical significance
+``` {r}
+# A series of linear models were used to compare relative abdundance of Streptococcus and STaphylococcus ASVs
+
+RA.df_SS <- boxplot.SS_RA2
+
+MiSeq_Run<-metadata_filtered%>%
+  select(Sample, Run_No) %>% 
+  deframe()
+
+RA.df_SS$MiSeq_Run<-MiSeq_Run[match(RA.df_SS$Sample.ID, names(MiSeq_Run))]
+```
+#### Staphylococcus_17
+```{r}
+sta17RA <- filter(RA.df_SS, ASV=="Staphylococcus_17")
+sta17.lm <- lm(RA ~ Sample_group, data=sta17RA)
+summary(sta17.lm)
+par(mfrow=c(2,2))
+plot(sta17.lm)
+```
+#### Streptococcus_34
+```{r}
+str34RA <- filter(RA.df_SS, ASV=="Streptococcus_34")
+str34.lm <- lm(RA ~ Sample_group, data=str34RA)
+summary(str34.lm)
+par(mfrow=c(2,2))
+plot(str34.lm)
+```
+#### Staphylococcus_51
+```{r}
+sta51RA <- filter(RA.df_SS, ASV=="Staphylococcus_51")
+sta51.lm <- lm(RA ~ Sample_group, data=sta51RA)
+summary(sta51.lm)
+par(mfrow=c(2,2))
+plot(sta51.lm)
+```
+#### Streptococcus_69
+```{r}
+str69RA <- filter(RA.df_SS, ASV=="Streptococcus_69")
+str69.lm <- lm(RA ~ Sample_group, data=str69RA)
+summary(str69.lm)
+par(mfrow=c(2,2))
+plot(str69.lm)
+```
+#### Streptococcus_90
+```{r}
+str90RA <- filter(RA.df_SS, ASV=="Streptococcus_90")
+str90.lm <- lm(RA ~ Sample_group, data=str90RA)
+summary(str90.lm)
+par(mfrow=c(2,2))
+plot(str90.lm)
+```
+#### Streptococcus_195
+```{r}
+str195RA <- filter(RA.df_SS, ASV=="Streptococcus_195")
+str195.lm <- lm(RA ~ Sample_group, data=str195RA)
+summary(str195.lm)
+par(mfrow=c(2,2))
+plot(str195.lm)
+```
+#### Streptococcus_216
+```{r}
+str216RA <- filter(RA.df_SS, ASV=="Streptococcus_216")
+str216.lm <- lm(RA ~ Sample_group, data=str216RA)
+summary(str216.lm)
+par(mfrow=c(2,2))
+plot(str216.lm)
+```
+#### Streptococcus_301
+Only found in one sample group so no linear model required
+
+#### Adjusted p values
+```{r}
+lmp <- function (modelobject) {
+    if (class(modelobject) != "lm") stop("Not an object of class 'lm' ")
+    f <- summary(modelobject)$fstatistic
+    p <- pf(f[1],f[2],f[3],lower.tail=F)
+    attributes(p) <- NULL
+    return(p)
+}
+
+SS.RA_pval <- c(lmp(sta17.lm), lmp(str34.lm), lmp(sta51.lm), lmp(str69.lm), lmp(str90.lm), lmp(str195.lm), lmp(str216.lm), NA)
+
+SS.RA_adjpval <- p.adjust(SS.RA_pval, method = "BH")
+
+SS.RA_R2 <- c(summary(sta17.lm)$r.squared, summary(str34.lm)$r.squared, summary(sta51.lm)$r.squared, summary(str69.lm)$r.squared, summary(str90.lm)$r.squared, summary(str195.lm)$r.squared, summary(str216.lm)$r.squared, NA)
+
+SS.RA_table <- data.frame(SS_names, SS.RA_R2, SS.RA_pval, SS.RA_adjpval)
+
+print(xtable(SS.RA_table, type = "latex", digits = 3), file = "SS_Relative_Abundance_Linear_Model.tex")
+
+```
+
+# Random Forest
+```{r}
+# set random seed number
+set.seed(151)
+library(randomForest)
+
+# run model
+rf1 <- randomForest(t(otu_table_ord_RA), as.factor(metadata_filtered$Sample_type), ntree=1000) 
+
+# retreive OTU importance from model
+imp <- data.frame(predictors = rownames(importance(rf1)), importance(rf1))
+
+# Order the predictor levels by importance
+imp.sort <- arrange(imp, desc(MeanDecreaseGini))
+imp.sort$predictors <- factor(imp.sort$predictors, levels = imp.sort$predictors)
+
+# Select the top 10 predictors
+imp.10 <- imp.sort[1:20, ]
+
+# plot otus by decreasing importance
+ggplot(imp.10, aes(x = predictors, y = MeanDecreaseGini)) +geom_bar(stat = "identity", fill = "indianred") +coord_flip()+
+  theme_bw()
+
+```
+
